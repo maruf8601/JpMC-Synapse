@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { EventEntity, Language, Category, Priority, ReviewStatus } from '../domain/models';
 import {
   CATEGORIES,
@@ -33,7 +33,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   onAddEvent,
   language,
 }) => {
-  const [activeMode, setActiveMode] = useState<'ai' | 'manual'>('ai');
+  const [activeMode, setActiveMode] = useState<'ai' | 'manual'>('manual');
   const [nlInput, setNlInput] = useState('');
   const [isAiParsing, setIsAiParsing] = useState(false);
   const [parsedPreview, setParsedPreview] = useState<Partial<EventEntity> | null>(null);
@@ -45,14 +45,38 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   const [title, setTitle] = useState('');
   const [eventDate, setEventDate] = useState(defaultDate);
   const [startTime, setStartTime] = useState('10:00');
-  const [endTime, setEndTime] = useState('11:30');
-  const [venue, setVenue] = useState('অধ্যক্ষের কার্যালয়, জেপিএমসি');
+  const [endTime, setEndTime] = useState('');
+  const [venue, setVenue] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<Category>('সভা');
   const [priority, setPriority] = useState<Priority>('normal');
   const [committee, setCommittee] = useState('');
   const [participants, setParticipants] = useState('');
   const [isAllDay, setIsAllDay] = useState(false);
+  // Smart Bengali Schedule Parser error state (must remain before any early return)
+  const [extractionError, setExtractionError] = useState<string | null>(null);
+
+  // Reset form cleanly whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setActiveMode('manual');
+      setTitle('');
+      const dhakaDate = getDhakaNow().toISOString().split('T')[0];
+      setEventDate(dhakaDate);
+      setStartTime('10:00');
+      setEndTime('');
+      setVenue('');
+      setDescription('');
+      setCategory('সভা');
+      setPriority('normal');
+      setCommittee('');
+      setParticipants('');
+      setIsAllDay(false);
+      setNlInput('');
+      setParsedPreview(null);
+      setExtractionError(null);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -63,9 +87,6 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     '২০ সেপ্টেম্বর দুপুর ১২টায় Gallery 2-তে সেমিনার',
     'আগামীকাল বিকাল তিনটায় PWD কর্মকর্তাদের সাথে সভা',
   ];
-
-  // Smart Bengali Schedule Parser using real Server-Side Gemini
-  const [extractionError, setExtractionError] = useState<string | null>(null);
 
   const parseBengaliNaturalLanguage = async (text: string) => {
     if (!text.trim()) return;
@@ -228,18 +249,18 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
 
     onAddEvent({
       title: title.trim(),
-      eventDate,
-      startTime,
-      endTime: isAllDay ? null : endTime,
-      venue: venue.trim() || 'জেপিএমসি',
+      eventDate: eventDate || null,
+      startTime: isAllDay ? null : (startTime && startTime.trim() ? startTime.trim() : null),
+      endTime: isAllDay ? null : (endTime && endTime.trim() ? endTime.trim() : null),
+      venue: venue.trim() ? venue.trim() : null,
       category,
       priority,
-      description: description.trim(),
-      committee: committee.trim() || undefined,
-      participants: participants.trim() || undefined,
+      description: description.trim() || '',
+      committee: committee.trim() ? committee.trim() : undefined,
+      participants: participants.trim() ? participants.trim() : undefined,
       isAllDay,
       source: 'Manual',
-      confidence: undefined,
+      confidence: null,
       reviewStatus: 'auto_approved',
       syncStatus: 'synced',
       reminders: [
@@ -656,14 +677,13 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
 
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">
-                  {language === 'bn' ? 'স্থান / ভেন্যু *' : 'Venue *'}
+                  {language === 'bn' ? 'স্থান / ভেন্যু (ঐচ্ছিক)' : 'Venue (Optional)'}
                 </label>
                 <input
                   type="text"
-                  required
                   value={venue}
                   onChange={(e) => setVenue(e.target.value)}
-                  placeholder="অধ্যক্ষের কার্যালয়ের শিক্ষক কক্ষ / Lecture Gallery-1"
+                  placeholder={language === 'bn' ? 'যেমন: কনফারেন্স রুম / অডিটোরিয়াম' : 'e.g. Conference Room / Auditorium'}
                   className="w-full p-2.5 rounded-xl border border-slate-300 bg-white"
                 />
               </div>

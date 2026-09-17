@@ -71,20 +71,39 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
           const label = language === 'bn' ? tab.labelBn : tab.labelEn;
 
           if (tab.isCenterAction) {
+            const handleAddTrigger = (e: React.MouseEvent | React.TouchEvent) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenQuickAdd();
+              onSelectTab('add');
+            };
+
             return (
-              <div key={tab.id} className="relative -top-3.5 flex flex-col items-center">
+              <div
+                key={tab.id}
+                id="nav-tab-add-wrapper"
+                onClick={handleAddTrigger}
+                className="flex-1 flex flex-col items-center justify-center relative -top-3.5 cursor-pointer select-none group touch-manipulation z-50 pointer-events-auto"
+              >
                 <button
+                  type="button"
                   id="bottom-nav-fab-add"
-                  onClick={onOpenQuickAdd}
-                  className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-[#006A60] to-[#00897B] text-white flex items-center justify-center shadow-lg shadow-teal-900/30 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-150 border-2 border-white"
-                  title={label}
-                  aria-label={label}
+                  onClick={handleAddTrigger}
+                  aria-label="Add event"
+                  title={language === 'bn' ? 'কর্মসূচি যোগ করুন' : 'Add event'}
+                  className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-[#006A60] to-[#00897B] text-white flex items-center justify-center shadow-lg shadow-teal-900/30 group-hover:shadow-xl group-hover:scale-105 active:scale-95 transition-all duration-150 border-2 border-white focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 cursor-pointer pointer-events-auto"
                 >
-                  <Plus className="w-7 h-7 stroke-[2.5]" />
+                  <Plus className="w-7 h-7 stroke-[2.5] pointer-events-none" />
                 </button>
-                <span className="text-[10px] font-semibold text-[#006A60] mt-0.5">
+                <button
+                  type="button"
+                  id="nav-tab-add"
+                  onClick={handleAddTrigger}
+                  aria-label="Add event"
+                  className="text-[10px] font-semibold text-[#006A60] mt-0.5 group-hover:text-[#004D40] transition-colors bg-transparent border-0 p-0 cursor-pointer focus:outline-none"
+                >
                   {label}
-                </span>
+                </button>
               </div>
             );
           }
