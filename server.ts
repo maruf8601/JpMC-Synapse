@@ -21,6 +21,8 @@ import {
   registerDeviceInFirestore,
   getActiveDevices,
   getTelegramMessagesFromFirestore,
+  getEventsFromFirestore,
+  removeUndefinedFields,
 } from './src/server/firebaseAdmin';
 import {
   startReminderScheduler,
@@ -32,6 +34,36 @@ import {
 } from './src/server/reminderScheduler';
 
 const PORT = 3000;
+
+/**
+ * Derives the canonical public application URL.
+ * Never hardcodes localhost for production.
+ * Respects PUBLIC_APP_URL, APP_URL, RENDER_EXTERNAL_URL, reverse-proxy headers, or Render fallback.
+ */
+function getPublicAppUrl(req?: Request): string {
+  const configured =
+    process.env.PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.RENDER_EXTERNAL_URL;
+  if (configured && !configured.includes('localhost') && !configured.includes('127.0.0.1')) {
+    return configured.replace(/\/$/, '');
+  }
+
+  if (req) {
+    const rawHost = (req.headers['x-forwarded-host'] || req.headers['host']) as string | undefined;
+    const host = Array.isArray(rawHost) ? rawHost[0] : rawHost?.split(',')[0]?.trim();
+    if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
+      const proto = ((req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim()) || req.protocol || 'https';
+      return `${proto}://${host}`;
+    }
+  }
+
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    return 'https://jpmc-synapse.onrender.com';
+  }
+
+  return `http://localhost:${PORT}`;
+}
 
 /**
  * Authentication Middleware for Google Cloud Scheduler / Internal Automation
@@ -234,13 +266,13 @@ async function startServer() {
   // Telegram Integration Status
   app.get('/api/telegram/status', async (req, res) => {
     const isBotConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN);
-    const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+    const publicUrl = getPublicAppUrl(req);
     const messages = await getTelegramMessagesFromFirestore(20);
 
     res.json({
       configured: isBotConfigured,
       botTokenSet: isBotConfigured,
-      webhookUrl: `${appUrl}/api/telegram/webhook`,
+      webhookUrl: `${publicUrl}/api/telegram/webhook`,
       totalMessagesReceived: messages.length,
       lastReceived: messages.length > 0 ? messages[0].timestamp : null,
       secretTokenConfigured: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
@@ -249,7 +281,7 @@ async function startServer() {
 
   // Set Telegram Webhook programmatically
   app.post('/api/telegram/setup-webhook', validateAdminOrUserAuth, async (req, res) => {
-    const appUrl = req.body?.appUrl || process.env.APP_URL || `http://localhost:${PORT}`;
+    const appUrl = req.body?.appUrl || getPublicAppUrl(req);
     const secret = req.body?.secret || process.env.TELEGRAM_WEBHOOK_SECRET;
 
     const result = await setupTelegramWebhookUrl(appUrl, secret);
@@ -260,6 +292,16 @@ async function startServer() {
   app.get('/api/telegram/messages', async (req, res) => {
     const messages = await getTelegramMessagesFromFirestore(50);
     res.json({ messages });
+  });
+
+  // Recent Synced Events (from Firestore / in-memory cache)
+  app.get('/api/events', async (req, res) => {
+    try {
+      const events = await getEventsFromFirestore(150);
+      res.json({ events });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to query events' });
+    }
   });
 
   // Register Device Push Token
@@ -463,14 +505,14 @@ async function startServer() {
   app.post('/api/settings/reminder-preferences', validateAdminOrUserAuth, async (req, res) => {
     try {
       const { dailyBriefingTime, dailyBriefingEnabled, defaultReminder2h, defaultReminder30m, notifyWhenNoEventsToday } = req.body;
-      const dataToSave = {
+      const dataToSave = removeUndefinedFields({
         dailyBriefingTime: dailyBriefingTime || '07:30',
         dailyBriefingEnabled: dailyBriefingEnabled !== false,
         defaultReminder2h: defaultReminder2h !== false,
         defaultReminder30m: defaultReminder30m !== false,
         notifyWhenNoEventsToday: Boolean(notifyWhenNoEventsToday),
         updatedAt: new Date().toISOString(),
-      };
+      });
 
       await adminDb.collection('settings').doc('reminder_preferences').set(dataToSave, { merge: true });
       res.json({ success: true, settings: dataToSave });
@@ -483,6 +525,7 @@ async function startServer() {
   app.get('/api/integrations/status', async (req, res) => {
     const isBotConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN);
     const isGeminiConfigured = Boolean(process.env.GEMINI_API_KEY);
+    const publicUrl = getPublicAppUrl(req);
     const devices = await getActiveDevices();
     const scheduler = getSchedulerStatus();
     const telegramMessages = await getTelegramMessagesFromFirestore(5);
@@ -490,7 +533,7 @@ async function startServer() {
     res.json({
       telegram: {
         configured: isBotConfigured,
-        webhookUrl: `${process.env.APP_URL || `http://localhost:${PORT}`}/api/telegram/webhook`,
+        webhookUrl: `${publicUrl}/api/telegram/webhook`,
         recentCount: telegramMessages.length,
         lastMessageAt: telegramMessages.length > 0 ? telegramMessages[0].timestamp : null,
       },

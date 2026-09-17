@@ -10,7 +10,9 @@ import {
   adminDb,
   isTelegramMessageProcessedInFirestore,
   saveTelegramMessageToFirestore,
+  saveExtractedEventToFirestore,
   getTelegramMessagesFromFirestore,
+  removeUndefinedFields,
 } from './firebaseAdmin';
 
 export interface TelegramWebhookResult {
@@ -33,8 +35,8 @@ export interface IngestedTelegramRecord {
   timestamp: string;
   rawText: string;
   hasDocument: boolean;
-  documentType?: 'pdf' | 'image' | 'text';
-  documentName?: string;
+  documentType?: 'pdf' | 'image' | 'text' | null;
+  documentName?: string | null;
   status: 'Schedule Created' | 'Needs Review' | 'Not a Schedule' | 'Duplicate' | 'Processing Failed';
   extractedEventIds: string[];
   confidence: number;
@@ -128,8 +130,8 @@ export async function processTelegramWebhookUpdate(
   const senderRole = message.from?.username ? `@${message.from.username}` : 'Notice Broadcaster';
 
   let hasDocument = false;
-  let documentType: 'pdf' | 'image' | 'text' | undefined = undefined;
-  let documentName: string | undefined = undefined;
+  let documentType: 'pdf' | 'image' | 'text' | null = null;
+  let documentName: string | null = null;
   let documentBase64: string | undefined = undefined;
   let documentMimeType: string | undefined = undefined;
 
@@ -162,6 +164,12 @@ export async function processTelegramWebhookUpdate(
     }
   }
 
+  // For plain text messages with no attachment, documentType is 'text' and documentName is null
+  if (!hasDocument) {
+    documentType = 'text';
+    documentName = null;
+  }
+
   // If message has neither text nor document
   if (!rawText.trim() && !documentBase64) {
     return {
@@ -174,6 +182,10 @@ export async function processTelegramWebhookUpdate(
     };
   }
 
+  console.log(
+    `[Telegram Webhook] Ingesting message (chat: ${chatId}, messageId: ${messageId}, hasDoc: ${hasDocument}, docType: ${documentType})`
+  );
+
   try {
     // 4. Dispatch to Gemini Extractor
     const extraction = await extractEventsWithGemini({
@@ -185,6 +197,10 @@ export async function processTelegramWebhookUpdate(
 
     const events = extraction.events;
     const createdEventIds: string[] = [];
+
+    console.log(
+      `[Telegram Webhook] Gemini extraction completed: ${events.length} event(s) parsed (isEventRelated: ${extraction.isEventRelated})`
+    );
 
     // 5. Strict Validation & Persistence of Extracted Events into Firestore
     for (const ev of events) {
@@ -226,7 +242,7 @@ export async function processTelegramWebhookUpdate(
       const eventEntity = {
         id: eventId,
         title: ev.title || 'শিরোনাম নির্ধারণ প্রয়োজন',
-        description: ev.description,
+        description: ev.description || '',
         eventDate: ev.date || null,
         startTime: ev.startTime || null,
         endTime: ev.endTime || null,
@@ -242,17 +258,13 @@ export async function processTelegramWebhookUpdate(
         confidence: typeof ev.confidence === 'number' ? ev.confidence : 0,
         reviewStatus,
         syncStatus: 'pending',
-        ambiguities: ev.ambiguities || [],
+        ambiguities: Array.isArray(ev.ambiguities) ? ev.ambiguities : [],
         reminders,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
 
-      try {
-        await adminDb.collection('events').doc(eventId).set(eventEntity);
-      } catch (err) {
-        console.error('[Telegram] Failed to save extracted event in Firestore:', err);
-      }
+      await saveExtractedEventToFirestore(eventEntity);
     }
 
     const reviewRequiredCount = events.filter(
@@ -274,7 +286,7 @@ export async function processTelegramWebhookUpdate(
       messageId,
       chatId,
       senderName,
-      senderRole,
+      senderRole: senderRole || 'Notice Broadcaster',
       timestamp: new Date().toLocaleTimeString('bn-BD', {
         timeZone: 'Asia/Dhaka',
         hour: '2-digit',
@@ -282,8 +294,8 @@ export async function processTelegramWebhookUpdate(
       }),
       rawText: rawText || (documentName ? `[সংযুক্ত ফাইল: ${documentName}]` : ''),
       hasDocument,
-      documentType,
-      documentName,
+      documentType: hasDocument ? (documentType || 'text') : 'text',
+      documentName: hasDocument ? (documentName || null) : null,
       status: statusLabel,
       extractedEventIds: createdEventIds,
       confidence: events.length > 0 && typeof events[0].confidence === 'number' ? events[0].confidence : 0,
@@ -291,6 +303,9 @@ export async function processTelegramWebhookUpdate(
     };
 
     await saveTelegramMessageToFirestore(record);
+    console.log(
+      `[Telegram Webhook] Completed processing message ${chatId}_${messageId} (status: ${statusLabel}, events: ${createdEventIds.length})`
+    );
 
     return {
       ok: true,
@@ -302,7 +317,7 @@ export async function processTelegramWebhookUpdate(
       reviewRequiredCount,
     };
   } catch (err: any) {
-    console.error('[Telegram] Extraction or storage error:', err);
+    console.error('[Telegram Webhook] Extraction or storage error:', err?.message || err);
 
     // Record failure in Firestore so message is logged
     const failedRecord: IngestedTelegramRecord = {
@@ -310,12 +325,12 @@ export async function processTelegramWebhookUpdate(
       messageId,
       chatId,
       senderName,
-      senderRole,
+      senderRole: senderRole || 'Notice Broadcaster',
       timestamp: new Date().toLocaleTimeString('bn-BD', { timeZone: 'Asia/Dhaka' }),
       rawText: rawText || '',
       hasDocument,
-      documentType,
-      documentName,
+      documentType: hasDocument ? (documentType || 'text') : 'text',
+      documentName: hasDocument ? (documentName || null) : null,
       status: 'Processing Failed',
       extractedEventIds: [],
       confidence: 0,

@@ -77,6 +77,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     lastReceived: null,
   });
 
+  const derivePublicWebhookUrl = (serverWebhookUrl?: string): string => {
+    // 1. If server already provided a valid non-localhost URL, use it
+    if (serverWebhookUrl && !serverWebhookUrl.includes('localhost') && !serverWebhookUrl.includes('127.0.0.1')) {
+      return serverWebhookUrl;
+    }
+
+    // 2. Client-side environment variable (if provided)
+    const envPublicUrl = (import.meta as any).env?.VITE_PUBLIC_APP_URL || (import.meta as any).env?.VITE_APP_URL;
+    if (envPublicUrl && !envPublicUrl.includes('localhost')) {
+      return `${envPublicUrl.replace(/\/$/, '')}/api/telegram/webhook`;
+    }
+
+    // 3. If running in browser and the origin is not localhost (e.g., deployed domain or Cloud Run)
+    if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
+      return `${window.location.origin}/api/telegram/webhook`;
+    }
+
+    // 4. Default canonical production Render URL
+    return 'https://jpmc-synapse.onrender.com/api/telegram/webhook';
+  };
+
   // Gemini AI real status
   const [geminiStatus, setGeminiStatus] = useState<{
     configured: boolean;
@@ -126,7 +147,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           if (data.telegram) {
             setTelegramStatus({
               configured: Boolean(data.telegram.configured),
-              webhookUrl: data.telegram.webhookUrl || `${window.location.origin}/api/telegram/webhook`,
+              webhookUrl: derivePublicWebhookUrl(data.telegram.webhookUrl),
               totalMessagesReceived: data.telegram.recentCount || 0,
               lastReceived: data.telegram.lastMessageAt || null,
             });
@@ -145,7 +166,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       .catch(() => {
         setTelegramStatus((prev) => ({
           ...prev,
-          webhookUrl: `${window.location.origin}/api/telegram/webhook`,
+          webhookUrl: derivePublicWebhookUrl(),
         }));
       });
 
@@ -242,7 +263,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleCopyWebhook = () => {
-    const url = telegramStatus.webhookUrl || `${window.location.origin}/api/telegram/webhook`;
+    const url = derivePublicWebhookUrl(telegramStatus.webhookUrl);
     navigator.clipboard.writeText(url);
     setIsCopiedWebhook(true);
     setTimeout(() => setIsCopiedWebhook(false), 2000);
@@ -402,7 +423,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Webhook endpoint copy row */}
           <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 flex items-center justify-between text-[11px]">
             <span className="font-mono text-slate-600 truncate mr-2">
-              {telegramStatus.webhookUrl || `${window.location.origin}/api/telegram/webhook`}
+              {derivePublicWebhookUrl(telegramStatus.webhookUrl)}
             </span>
             <button
               onClick={handleCopyWebhook}

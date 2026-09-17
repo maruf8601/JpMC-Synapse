@@ -177,8 +177,15 @@ export const TelegramTextToMeeting: React.FC<TelegramTextToMeetingProps> = ({
     }, 3500);
   };
 
+  const derivePublicWebhookUrl = (): string => {
+    if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
+      return `${window.location.origin}/api/telegram/webhook`;
+    }
+    return 'https://jpmc-synapse.onrender.com/api/telegram/webhook';
+  };
+
   const handleCopyWebhookUrl = () => {
-    const webhookUrl = `${window.location.origin}/api/telegram/webhook`;
+    const webhookUrl = derivePublicWebhookUrl();
     navigator.clipboard.writeText(webhookUrl);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
@@ -245,7 +252,7 @@ export const TelegramTextToMeeting: React.FC<TelegramTextToMeetingProps> = ({
               : '1. Create a bot using @BotFather and set TELEGRAM_BOT_TOKEN in .env.'}
           </p>
           <div className="bg-white p-2.5 rounded-xl border border-sky-200 font-mono text-[11px] text-slate-700 select-all overflow-x-auto">
-            curl -F "url={window.location.origin}/api/telegram/webhook" https://api.telegram.org/bot&lt;BOT_TOKEN&gt;/setWebhook
+            curl -F "url={derivePublicWebhookUrl()}" https://api.telegram.org/bot&lt;BOT_TOKEN&gt;/setWebhook
           </div>
           <p className="text-[11px] text-slate-600">
             {language === 'bn'

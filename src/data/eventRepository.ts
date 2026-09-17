@@ -130,6 +130,39 @@ class EventRepository {
     } catch (err) {
       console.warn('[Repository] Firestore sync initialization error:', err);
     }
+
+    // Call server endpoints as immediate sync fallback
+    this.fetchServerUpdates();
+  }
+
+  /**
+   * Fetch updates from server endpoints (/api/events & /api/telegram/messages)
+   * Ensures instant sync across sessions and environments
+   */
+  public async fetchServerUpdates(): Promise<void> {
+    try {
+      const [eventsRes, msgsRes] = await Promise.all([
+        fetch('/api/events').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        fetch('/api/telegram/messages').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
+
+      let hasChanged = false;
+      if (eventsRes?.events && Array.isArray(eventsRes.events) && eventsRes.events.length > 0) {
+        this.events = eventsRes.events;
+        hasChanged = true;
+      }
+      if (msgsRes?.messages && Array.isArray(msgsRes.messages) && msgsRes.messages.length > 0) {
+        this.telegramMessages = msgsRes.messages;
+        hasChanged = true;
+      }
+
+      if (hasChanged) {
+        this.persistLocalCache();
+        this.listeners.forEach((l) => l());
+      }
+    } catch (e) {
+      // Offline fallback silent catch
+    }
   }
 
   /**

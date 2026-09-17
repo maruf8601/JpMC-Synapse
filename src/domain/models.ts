@@ -80,8 +80,8 @@ export interface TelegramMessageEntity {
   timestamp: string;
   rawText: string;
   hasDocument: boolean;
-  documentType?: 'pdf' | 'image' | 'text';
-  documentName?: string;
+  documentType?: 'pdf' | 'image' | 'text' | null;
+  documentName?: string | null;
   status: 'Schedule Created' | 'Needs Review' | 'Not a Schedule' | 'Duplicate' | 'Processing Failed';
   extractedEventIds: string[];
   confidence: number;
