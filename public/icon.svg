@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="jpmcGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#004D40"/>
+      <stop offset="50%" stop-color="#006A60"/>
+      <stop offset="100%" stop-color="#00897B"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFE082"/>
+      <stop offset="100%" stop-color="#FFB300"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#00251A" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="108" fill="url(#jpmcGrad)"/>
+
+  <!-- Subtle grid & pulse lines -->
+  <g opacity="0.12" stroke="#ffffff" stroke-width="2">
+    <circle cx="256" cy="256" r="190" fill="none"/>
+    <circle cx="256" cy="256" r="140" fill="none"/>
+    <circle cx="256" cy="256" r="80" fill="none"/>
+    <line x1="66" y1="256" x2="446" y2="256"/>
+    <line x1="256" y1="66" x2="256" y2="446"/>
+  </g>
+
+  <!-- Medical Cross with Rounded Corners -->
+  <g filter="url(#shadow)">
+    <!-- Central Cross -->
+    <path d="M224 130 C224 121 231 114 240 114 L272 114 C281 114 288 121 288 130 L288 224 L382 224 C391 224 398 231 398 240 L398 272 C398 281 391 288 382 288 L288 288 L288 382 C288 391 281 398 272 398 L240 398 C231 398 224 391 224 382 L224 288 L130 288 C121 288 114 281 114 272 L114 240 C114 231 121 224 130 224 L224 224 Z" fill="#FFFFFF"/>
+    
+    <!-- Synapse Neural Nodes & Connections (Gold) -->
+    <!-- Center pulse -->
+    <circle cx="256" cy="256" r="28" fill="url(#goldGrad)"/>
+    <circle cx="256" cy="256" r="14" fill="#FFFFFF"/>
+    
+    <!-- Satellite nodes -->
+    <circle cx="256" cy="156" r="14" fill="url(#goldGrad)"/>
+    <circle cx="256" cy="356" r="14" fill="url(#goldGrad)"/>
+    <circle cx="156" cy="256" r="14" fill="url(#goldGrad)"/>
+    <circle cx="356" cy="256" r="14" fill="url(#goldGrad)"/>
+
+    <line x1="256" y1="170" x2="256" y2="228" stroke="url(#goldGrad)" stroke-width="6" stroke-linecap="round"/>
+    <line x1="256" y1="284" x2="256" y2="342" stroke="url(#goldGrad)" stroke-width="6" stroke-linecap="round"/>
+    <line x1="170" y1="256" x2="228" y2="256" stroke="url(#goldGrad)" stroke-width="6" stroke-linecap="round"/>
+    <line x1="284" y1="256" x2="342" y2="256" stroke="url(#goldGrad)" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <!-- JpMC Text -->
+  <text x="256" y="448" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="800" font-size="34" fill="#A7FFEB" letter-spacing="4">JpMC SYNAPSE</text>
+</svg>

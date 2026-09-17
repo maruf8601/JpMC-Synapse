@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Basic authentication check
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Owner check for private user records
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if the authenticated user is marked active in authorizedUsers registry
+    function isAuthorized() {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/authorizedUsers/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    // Authorized Users Registry (Managed by Admin SDK, read by authenticated users)
+    match /authorizedUsers/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Server Admin SDK only
+    }
+
+    // User Profile Documents
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
+
+      match /devices/{deviceId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Device Registry: Signed-in user may manage only their own device records
+    match /devices/{deviceId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAuthorized());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAuthorized());
+    }
+
+    // Events Collection: Authorized staff users can read and manage schedules
+    match /events/{eventId} {
+      allow read: if isAuthorized();
+      allow create, update, delete: if isAuthorized();
+    }
+
+    // Ingested Telegram Messages: Authorized users may view, but CLIENT CANNOT WRITE (Server Admin only)
+    match /telegramMessages/{messageDocId} {
+      allow read: if isAuthorized();
+      allow write: if false; // Client must not create, update, or delete raw Telegram ingestion records
+    }
+
+    // Notification Delivery Audit Logs: Client cannot write (Server Admin only)
+    match /notificationDeliveries/{deliveryId} {
+      allow read: if isAuthorized();
+      allow write: if false;
+    }
+
+    // Background Processing Jobs: Client cannot write (Server Admin only)
+    match /processingJobs/{jobId} {
+      allow read: if isAuthorized();
+      allow write: if false;
+    }
+
+    // App and System Settings: Authorized users only
+    match /settings/{settingId} {
+      allow read: if isAuthorized();
+      allow write: if isAuthorized();
+    }
+
+    // Sync Metadata (Google Calendar & Auto-Backup status): Authorized users only
+    match /syncMetadata/{metaId} {
+      allow read: if isAuthorized();
+      allow write: if isAuthorized();
+    }
+
+    // Scheduled Reminders Collection: Authorized users only
+    match /reminders/{reminderId} {
+      allow read: if isAuthorized();
+      allow write: if isAuthorized();
+    }
+  }
+}

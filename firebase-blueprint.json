@@ -1,0 +1,221 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authenticated user profile and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Official schedule and meeting record of Jamalpur Medical College",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "eventDate": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "venue": { "type": "string" },
+        "category": { "type": "string" },
+        "priority": { "type": "string", "enum": ["normal", "important", "urgent"] },
+        "source": { "type": "string", "enum": ["Telegram", "Google Calendar", "Manual", "AI Extracted"] },
+        "sourceId": { "type": "string" },
+        "telegramMessageId": { "type": "number" },
+        "telegramChatId": { "type": "string" },
+        "googleCalendarEventId": { "type": "string" },
+        "originalText": { "type": "string" },
+        "confidence": { "type": "number" },
+        "reviewStatus": { "type": "string", "enum": ["auto_approved", "needs_review", "rejected"] },
+        "syncStatus": { "type": "string", "enum": ["synced", "pending", "failed", "local_only"] },
+        "participants": { "type": "string" },
+        "committee": { "type": "string" },
+        "notes": { "type": "string" },
+        "isAllDay": { "type": "boolean" },
+        "isCompleted": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "eventDate", "startTime", "venue", "category", "priority", "source", "reviewStatus", "syncStatus", "createdAt", "updatedAt"]
+    },
+    "Device": {
+      "title": "Device",
+      "description": "Registered client browser or PWA device for background push notifications",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string" },
+        "userId": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "platform": { "type": "string" },
+        "userAgent": { "type": "string" },
+        "notificationsEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "lastSeenAt": { "type": "string" }
+      },
+      "required": ["deviceId", "fcmToken", "platform", "notificationsEnabled"]
+    },
+    "NotificationDelivery": {
+      "title": "NotificationDelivery",
+      "description": "Idempotent log of delivered push notifications to prevent duplicate alerts",
+      "type": "object",
+      "properties": {
+        "deliveryId": { "type": "string" },
+        "eventId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "userId": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "status": { "type": "string", "enum": ["sent", "failed"] },
+        "error": { "type": "string" },
+        "deliveredAt": { "type": "string" }
+      },
+      "required": ["deliveryId", "deviceId", "type", "title", "body", "status", "deliveredAt"]
+    },
+    "TelegramMessage": {
+      "title": "TelegramMessage",
+      "description": "Raw ingested Telegram notice or document with idempotency metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "messageId": { "type": "number" },
+        "chatId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "rawText": { "type": "string" },
+        "hasDocument": { "type": "boolean" },
+        "documentType": { "type": "string" },
+        "documentName": { "type": "string" },
+        "status": { "type": "string", "enum": ["Schedule Created", "Needs Review", "Not a Schedule", "Duplicate", "Processing Failed"] },
+        "confidence": { "type": "number" },
+        "processedAt": { "type": "string" }
+      },
+      "required": ["id", "chatId", "senderName", "timestamp", "rawText", "hasDocument", "status", "confidence"]
+    },
+    "ProcessingJob": {
+      "title": "ProcessingJob",
+      "description": "Background AI ingestion job for notice extraction and verification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "processing", "completed", "failed"] },
+        "errorMessage": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "completedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "status", "createdAt"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Application preferences and integration configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "key", "value", "updatedAt"]
+    },
+    "SyncMetadata": {
+      "title": "SyncMetadata",
+      "description": "Tracking Google Calendar and automated cloud backup statuses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "service": { "type": "string" },
+        "lastSyncAt": { "type": "string" },
+        "status": { "type": "string" },
+        "itemsSynced": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "service", "lastSyncAt", "status", "updatedAt"]
+    },
+    "Reminder": {
+      "title": "Reminder",
+      "description": "Scheduled notifications and morning briefing alarms for schedules",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventId": { "type": "string" },
+        "reminderType": { "type": "string", "enum": ["notification", "alarm", "morning_briefing"] },
+        "minutesBefore": { "type": "number" },
+        "scheduledAt": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "eventId", "reminderType", "minutesBefore", "scheduledAt", "enabled"]
+    },
+    "AuthorizedUser": {
+      "title": "AuthorizedUser",
+      "description": "Registry of authorized staff users with active access permissions",
+      "type": "object",
+      "properties": {
+        "active": { "type": "boolean" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["active"]
+    }
+  },
+  "firestore": {
+    "/authorizedUsers/{userId}": {
+      "schema": "AuthorizedUser",
+      "description": "Registry of active staff users authorized to access events and settings"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and permissions"
+    },
+    "/users/{userId}/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "User registered push notification tokens"
+    },
+    "/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Global device registry for push notifications"
+    },
+    "/notificationDeliveries/{deliveryId}": {
+      "schema": "NotificationDelivery",
+      "description": "Idempotent log of delivered push notifications"
+    },
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Collection of all hospital and college events"
+    },
+    "/telegramMessages/{messageDocId}": {
+      "schema": "TelegramMessage",
+      "description": "Ingested Telegram messages with deduplication checks"
+    },
+    "/processingJobs/{jobId}": {
+      "schema": "ProcessingJob",
+      "description": "Background processing jobs tracking"
+    },
+    "/settings/{settingId}": {
+      "schema": "Setting",
+      "description": "Global and user-level settings"
+    },
+    "/syncMetadata/{metaId}": {
+      "schema": "SyncMetadata",
+      "description": "Sync status records for Google Calendar and Drive"
+    },
+    "/reminders/{reminderId}": {
+      "schema": "Reminder",
+      "description": "Scheduled notification reminders"
+    }
+  }
+}
