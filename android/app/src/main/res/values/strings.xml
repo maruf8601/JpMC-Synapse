@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">JpMC Synapse</string>
+    <string name="title_activity_main">JpMC Synapse</string>
+    <string name="package_name">bd.gov.jpmc.synapse</string>
+    <string name="custom_url_scheme">bd.gov.jpmc.synapse</string>
+</resources>
