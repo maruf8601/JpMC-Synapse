@@ -36,17 +36,30 @@ jobs:
           java-version: '21'
           cache: gradle
 
+      # Restore and verify permanent release keystore
       - name: Restore Android release keystore
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/jpmc-synapse-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/jpmc-synapse-release.jks"
+
+          echo "=== Restored keystore size ==="
+          stat -c%s "$RUNNER_TEMP/jpmc-synapse-release.jks"
+
+          echo "=== Verify keystore ==="
+          keytool -list \
+            -keystore "$RUNNER_TEMP/jpmc-synapse-release.jks" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS"
 
       - name: Grant Gradle permission
         working-directory: android
         run: chmod +x gradlew
 
+      # Build APK and AAB using permanent release signing key
       - name: Build Signed Release APK and AAB
         working-directory: android
         env:
