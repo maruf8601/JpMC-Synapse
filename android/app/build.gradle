@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "bd.gov.jpmc.synapse"
+    namespace = "com.jpmc.synapse"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "bd.gov.jpmc.synapse"
+        applicationId "com.jpmc.synapse"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
