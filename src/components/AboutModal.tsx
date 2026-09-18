@@ -173,6 +173,38 @@ export const AboutModal: React.FC<AboutModalProps> = ({
               <span className="text-slate-500">Design System:</span>
               <span className="font-semibold text-teal-800">Material Design 3 (M3)</span>
             </div>
+            <div className="flex flex-col gap-1 pt-1.5 border-t border-teal-200/50 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Terms of Service:</span>
+                <a
+                  href="/terms"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onClose();
+                    window.history.pushState(null, '', '/terms');
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                  }}
+                  className="font-medium text-[#006A60] hover:underline"
+                >
+                  ব্যবহারের শর্তাবলী
+                </a>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Privacy Policy:</span>
+                <a
+                  href="/privacy"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onClose();
+                    window.history.pushState(null, '', '/privacy');
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                  }}
+                  className="font-medium text-[#006A60] hover:underline"
+                >
+                  গোপনীয়তা নীতি
+                </a>
+              </div>
+            </div>
           </div>
 
           {isFirstLogin ? (

@@ -14,6 +14,8 @@ import { EventDetailsModal } from './components/EventDetailsModal';
 import { QuickAddModal } from './components/QuickAddModal';
 import { AboutModal } from './components/AboutModal';
 import { AnnouncementModal } from './components/AnnouncementModal';
+import { PrivacyPolicyPage } from './components/PrivacyPolicyPage';
+import { TermsOfServicePage } from './components/TermsOfServicePage';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { DeviceFrame } from './components/DeviceFrame';
 import { SplashScreen } from './components/SplashScreen';
@@ -62,6 +64,24 @@ export default function App() {
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isPWAInstallModalOpen, setIsPWAInstallModalOpen] = useState(false);
   const [isReviewOpenFromHeader, setIsReviewOpenFromHeader] = useState(false);
+
+  // Public Legal Routes state (/privacy and /terms)
+  const [isPrivacyRoute, setIsPrivacyRoute] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && window.location.pathname.startsWith('/privacy');
+  });
+
+  const [isTermsRoute, setIsTermsRoute] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && window.location.pathname.startsWith('/terms');
+  });
+
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setIsPrivacyRoute(window.location.pathname.startsWith('/privacy'));
+      setIsTermsRoute(window.location.pathname.startsWith('/terms'));
+    };
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
 
   // Firebase Authentication & Authorization Resolver
   useEffect(() => {
@@ -307,6 +327,34 @@ export default function App() {
     }
   };
 
+  // Public route: /privacy is accessible without authentication or login
+  if (isPrivacyRoute) {
+    return (
+      <PrivacyPolicyPage
+        onBack={() => {
+          if (window.location.pathname.startsWith('/privacy')) {
+            window.history.pushState(null, '', '/');
+          }
+          setIsPrivacyRoute(false);
+        }}
+      />
+    );
+  }
+
+  // Public route: /terms is accessible without authentication or login
+  if (isTermsRoute) {
+    return (
+      <TermsOfServicePage
+        onBack={() => {
+          if (window.location.pathname.startsWith('/terms')) {
+            window.history.pushState(null, '', '/');
+          }
+          setIsTermsRoute(false);
+        }}
+      />
+    );
+  }
+
   if (authStatus === 'checking') {
     return <SplashScreen />;
   }
@@ -467,6 +515,16 @@ export default function App() {
                 language={language}
                 onLanguageChange={setLanguage}
                 onOpenAbout={() => setIsAboutOpen(true)}
+                onOpenPrivacy={() => {
+                  window.history.pushState(null, '', '/privacy');
+                  setIsPrivacyRoute(true);
+                  setIsTermsRoute(false);
+                }}
+                onOpenTerms={() => {
+                  window.history.pushState(null, '', '/terms');
+                  setIsTermsRoute(true);
+                  setIsPrivacyRoute(false);
+                }}
                 onResetData={() => eventRepository.resetToDefaults()}
                 onNavigateToTab={setCurrentTab}
                 onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}

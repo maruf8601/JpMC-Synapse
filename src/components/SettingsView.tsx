@@ -21,6 +21,7 @@ import {
   Copy,
   Check,
   ShieldCheck,
+  Scale,
   LogIn,
   Loader2,
 } from 'lucide-react';
@@ -62,6 +63,8 @@ interface SettingsViewProps {
   language: Language;
   onLanguageChange: (lang: Language) => void;
   onOpenAbout: () => void;
+  onOpenPrivacy?: () => void;
+  onOpenTerms?: () => void;
   onResetData: () => void;
   onNavigateToTab?: (tab: NavigationTab) => void;
   onOpenInstallModal?: () => void;
@@ -71,6 +74,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   language,
   onLanguageChange,
   onOpenAbout,
+  onOpenPrivacy,
+  onOpenTerms,
   onResetData,
   onNavigateToTab,
   onOpenInstallModal,
@@ -1053,7 +1058,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="space-y-2">
         <button
           onClick={onOpenAbout}
-          className="w-full bg-white hover:bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between text-left transition"
+          className="w-full bg-white hover:bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between text-left transition cursor-pointer"
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
@@ -1065,6 +1070,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </h4>
               <p className="text-[11px] text-slate-500">
                 Developed by Abdullah Al Maruf • Jamalpur Medical College
+              </p>
+            </div>
+          </div>
+          <ExternalLink className="w-4 h-4 text-slate-400" />
+        </button>
+
+        <button
+          onClick={() => {
+            if (onOpenTerms) {
+              onOpenTerms();
+            } else {
+              window.history.pushState(null, '', '/terms');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }
+          }}
+          className="w-full bg-white hover:bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between text-left transition cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
+              <Scale className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-800">
+                {language === 'bn' ? 'ব্যবহারের শর্তাবলী (Terms of Service)' : 'Terms of Service'}
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                Institutional usage rules, Google Sign-In & authorized activity guidelines
+              </p>
+            </div>
+          </div>
+          <ExternalLink className="w-4 h-4 text-slate-400" />
+        </button>
+
+        <button
+          onClick={() => {
+            if (onOpenPrivacy) {
+              onOpenPrivacy();
+            } else {
+              window.history.pushState(null, '', '/privacy');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }
+          }}
+          className="w-full bg-white hover:bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between text-left transition cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-800">
+                {language === 'bn' ? 'গোপনীয়তা নীতি (Privacy Policy)' : 'Privacy Policy'}
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                Data handling, Google Sign-In & institutional privacy terms
               </p>
             </div>
           </div>

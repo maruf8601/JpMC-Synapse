@@ -154,8 +154,33 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       </div>
 
       {/* Institutional Copyright Footer */}
-      <footer className="w-full max-w-md text-center py-2 text-[11px] text-slate-500 space-y-1">
+      <footer className="w-full max-w-md text-center py-2 text-[11px] text-slate-500 space-y-1.5">
         <p>জামালপুর মেডিকেল কলেজ, জামালপুর • com.jpmc.synapse</p>
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-slate-400">
+          <a
+            href="/terms"
+            onClick={(e) => {
+              e.preventDefault();
+              window.history.pushState(null, '', '/terms');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }}
+            className="text-teal-700 hover:text-teal-800 hover:underline font-medium"
+          >
+            Terms of Service (শর্তাবলী)
+          </a>
+          <span>•</span>
+          <a
+            href="/privacy"
+            onClick={(e) => {
+              e.preventDefault();
+              window.history.pushState(null, '', '/privacy');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }}
+            className="text-teal-700 hover:text-teal-800 hover:underline font-medium"
+          >
+            Privacy Policy (গোপনীয়তা নীতি)
+          </a>
+        </div>
         <p className="text-slate-400">Powered by JpMC Synapse AI Automation Engine</p>
       </footer>
     </div>
