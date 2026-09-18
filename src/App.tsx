@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { eventRepository } from './data/eventRepository';
-import { EventEntity, NavigationTab, Language, Category } from './domain/models';
+import { EventEntity, NavigationTab, Language, Category, AnnouncementEntity } from './domain/models';
 import { TopAppBar } from './components/TopAppBar';
 import { BottomNavBar } from './components/BottomNavBar';
 import { DashboardView } from './components/DashboardView';
@@ -13,17 +13,47 @@ import { EventHistoryDriveView } from './components/EventHistoryDriveView';
 import { EventDetailsModal } from './components/EventDetailsModal';
 import { QuickAddModal } from './components/QuickAddModal';
 import { AboutModal } from './components/AboutModal';
+import { AnnouncementModal } from './components/AnnouncementModal';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { DeviceFrame } from './components/DeviceFrame';
+import { SplashScreen } from './components/SplashScreen';
+import { LoginScreen } from './components/LoginScreen';
+import { AdminManagementView } from './components/AdminManagementView';
 import { checkAndRunDailyAutoBackup } from './services/autoBackupService';
 import { checkScheduledReminders } from './services/reminderNotificationService';
 import { initForegroundNotificationListener } from './services/pushNotificationService';
+import { getPendingAnnouncementsForUser } from './services/announcementService';
+import { auth } from './services/firebaseClient';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { apiFetch } from './config/api';
+import {
+  getUserAboutVersionSeen,
+  setUserAboutVersionSeen,
+  CURRENT_ABOUT_VERSION,
+} from './services/userPreferencesService';
 
 export default function App() {
   const [language, setLanguage] = useState<Language>('bn');
   const [currentTab, setCurrentTab] = useState<NavigationTab>('home');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
+
+  // Auth & Profile state
+  const [authStatus, setAuthStatus] = useState<'checking' | 'unauthenticated' | 'authenticated'>('checking');
+  const [userProfile, setUserProfile] = useState<{
+    uid: string;
+    email: string;
+    displayName: string;
+    role: 'admin' | 'user';
+    active: boolean;
+  } | null>(null);
+  const [isFirstLoginAbout, setIsFirstLoginAbout] = useState(false);
+  const [isSavingAboutPref, setIsSavingAboutPref] = useState(false);
+
+  // Announcement popup state
+  const [announcementQueue, setAnnouncementQueue] = useState<AnnouncementEntity[]>([]);
+  const [sessionDismissedAnnouncementIds, setSessionDismissedAnnouncementIds] = useState<string[]>([]);
+  const [isAnnouncementModalOpen, setIsAnnouncementModalOpen] = useState(false);
 
   // Repositories state
   const [, setVersion] = useState(0);
@@ -32,6 +62,92 @@ export default function App() {
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isPWAInstallModalOpen, setIsPWAInstallModalOpen] = useState(false);
   const [isReviewOpenFromHeader, setIsReviewOpenFromHeader] = useState(false);
+
+  // Firebase Authentication & Authorization Resolver
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+      if (!firebaseUser) {
+        setUserProfile(null);
+        setAuthStatus('unauthenticated');
+        return;
+      }
+
+      try {
+        const idToken = await firebaseUser.getIdToken();
+        const profileRes = await apiFetch('/api/auth/profile', {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        });
+        const profile = profileRes.ok ? await profileRes.json() : null;
+
+        const role: 'admin' | 'user' =
+          profile?.role === 'admin' ||
+          ['marufjb@gmail.com', 'nasir230171@gmail.com'].includes(
+            (firebaseUser.email || '').toLowerCase()
+          )
+            ? 'admin'
+            : 'user';
+
+        const active = profile?.active !== false;
+
+        const resolvedProfile = {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          displayName:
+            profile?.displayName ||
+            firebaseUser.displayName ||
+            firebaseUser.email?.split('@')[0] ||
+            'Staff',
+          role,
+          active,
+        };
+
+        setUserProfile(resolvedProfile);
+
+        // Check if user has seen version 1.0 of the institutional About popup
+        try {
+          const seenVersion = await getUserAboutVersionSeen(firebaseUser.uid);
+          if (seenVersion !== CURRENT_ABOUT_VERSION) {
+            setIsFirstLoginAbout(true);
+            setIsAboutOpen(true);
+          }
+        } catch (prefErr) {
+          console.warn('[App] About version preference check warning:', prefErr);
+        }
+
+        setAuthStatus('authenticated');
+      } catch (err) {
+        console.warn('[App] Auth profile fetch fallback:', err);
+        const role: 'admin' | 'user' =
+          ['marufjb@gmail.com', 'nasir230171@gmail.com'].includes(
+            (firebaseUser.email || '').toLowerCase()
+          )
+            ? 'admin'
+            : 'user';
+
+        setUserProfile({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          displayName: firebaseUser.displayName || 'Staff',
+          role,
+          active: true,
+        });
+
+        try {
+          const seenVersion = await getUserAboutVersionSeen(firebaseUser.uid);
+          if (seenVersion !== CURRENT_ABOUT_VERSION) {
+            setIsFirstLoginAbout(true);
+            setIsAboutOpen(true);
+          }
+        } catch {}
+
+        setAuthStatus('authenticated');
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Initialize Foreground FCM Listener and Service Worker deep link messages
   useEffect(() => {
@@ -42,6 +158,20 @@ export default function App() {
         if (ev) {
           setSelectedEvent(ev);
         }
+      }
+
+      // If notification is an announcement broadcast, refresh announcements immediately
+      if (data?.type === 'announcement' && userProfile?.uid) {
+        getPendingAnnouncementsForUser(
+          userProfile.uid,
+          userProfile.role,
+          sessionDismissedAnnouncementIds
+        ).then((queue) => {
+          if (queue.length > 0) {
+            setAnnouncementQueue(queue);
+            setIsAnnouncementModalOpen(true);
+          }
+        });
       }
     });
 
@@ -57,7 +187,39 @@ export default function App() {
     if (linkedTab) {
       setCurrentTab(linkedTab);
     }
-  }, []);
+  }, [userProfile?.uid, userProfile?.role, sessionDismissedAnnouncementIds]);
+
+  // Check active announcements for the authenticated user
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    let isMounted = true;
+
+    const checkAnnouncements = async () => {
+      try {
+        const queue = await getPendingAnnouncementsForUser(
+          userProfile.uid,
+          userProfile.role,
+          sessionDismissedAnnouncementIds
+        );
+        if (isMounted && queue.length > 0) {
+          setAnnouncementQueue(queue);
+          setIsAnnouncementModalOpen(true);
+        }
+      } catch (err) {
+        console.warn('[App] Announcement check failed:', err);
+      }
+    };
+
+    // If first-login About modal is open, wait until user closes it before showing popup announcements
+    if (!isAboutOpen) {
+      checkAnnouncements();
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [userProfile?.uid, userProfile?.role, isAboutOpen]);
 
   useEffect(() => {
     const unsubscribe = eventRepository.subscribe(() => {
@@ -129,6 +291,31 @@ export default function App() {
     setSelectedEvent(null);
     setIsQuickAddOpen(true);
   };
+
+  const handleGetStartedFromAbout = async () => {
+    setIsSavingAboutPref(true);
+    try {
+      if (userProfile?.uid) {
+        await setUserAboutVersionSeen(userProfile.uid, CURRENT_ABOUT_VERSION);
+      }
+    } catch (err) {
+      console.warn('Error saving about version preference:', err);
+    } finally {
+      setIsSavingAboutPref(false);
+      setIsAboutOpen(false);
+      setIsFirstLoginAbout(false);
+    }
+  };
+
+  if (authStatus === 'checking') {
+    return <SplashScreen />;
+  }
+
+  if (authStatus === 'unauthenticated') {
+    return <LoginScreen onLoginSuccess={() => setAuthStatus('checking')} />;
+  }
+
+  const userRole = userProfile?.role || 'user';
 
   return (
     <DeviceFrame language={language}>
@@ -219,9 +406,11 @@ export default function App() {
                 onToggleComplete={handleToggleComplete}
                 onNavigateToTab={setCurrentTab}
                 onOpenReviewModal={() => setIsReviewOpenFromHeader(true)}
+                onOpenQuickAdd={() => setIsQuickAddOpen(true)}
                 language={language}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
+                userProfile={userProfile || undefined}
               />
             )}
 
@@ -255,6 +444,21 @@ export default function App() {
                 language={language}
                 onOpenReview={() => setIsReviewOpenFromHeader(true)}
                 onSelectEvent={setSelectedEvent}
+                role={userRole}
+              />
+            )}
+
+            {currentTab === 'admin' && (
+              <AdminManagementView
+                pendingReviewEvents={pendingReviewEvents}
+                onApproveEvent={handleApproveEvent}
+                onRejectEvent={handleRejectEvent}
+                onOpenQuickAdd={() => setIsQuickAddOpen(true)}
+                language={language}
+                onMeetingCreated={handleAddEvent}
+                pastEvents={pastEvents}
+                allEvents={allHistoryRecords}
+                onSelectEvent={setSelectedEvent}
               />
             )}
 
@@ -287,6 +491,7 @@ export default function App() {
         language={language}
         onOpenQuickAdd={() => setIsQuickAddOpen(true)}
         reviewCount={pendingReviewEvents.length}
+        role={userRole}
       />
 
       {/* 5. Modals & Overlays */}
@@ -297,6 +502,7 @@ export default function App() {
         onDelete={handleDeleteEvent}
         onEdit={handleEditEvent}
         language={language}
+        role={userRole}
       />
 
       <QuickAddModal
@@ -308,8 +514,15 @@ export default function App() {
 
       <AboutModal
         isOpen={isAboutOpen}
-        onClose={() => setIsAboutOpen(false)}
+        onClose={() => {
+          if (!isFirstLoginAbout) {
+            setIsAboutOpen(false);
+          }
+        }}
         language={language}
+        isFirstLogin={isFirstLoginAbout}
+        onGetStarted={handleGetStartedFromAbout}
+        isSavingPreference={isSavingAboutPref}
       />
 
       <PWAInstallGuideModal
@@ -317,6 +530,22 @@ export default function App() {
         onClose={() => setIsPWAInstallModalOpen(false)}
         language={language}
       />
+
+      {/* 6. In-App Popup Announcement Modal */}
+      {isAnnouncementModalOpen && announcementQueue.length > 0 && (
+        <AnnouncementModal
+          queue={announcementQueue}
+          userId={userProfile?.uid}
+          onDismiss={() => {
+            setIsAnnouncementModalOpen(false);
+            setSessionDismissedAnnouncementIds((prev) => [
+              ...prev,
+              ...announcementQueue.map((a) => a.id),
+            ]);
+            setAnnouncementQueue([]);
+          }}
+        />
+      )}
     </DeviceFrame>
   );
 }

@@ -24,6 +24,7 @@ interface TelegramInboxViewProps {
   language: Language;
   onOpenReview: () => void;
   onSelectEvent?: (event: EventEntity) => void;
+  role?: 'admin' | 'user';
 }
 
 export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
@@ -31,8 +32,12 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
   language,
   onOpenReview,
   onSelectEvent,
+  role = 'user',
 }) => {
-  const [activeSegment, setActiveSegment] = useState<'text_to_meeting' | 'inbox'>('text_to_meeting');
+  const isAdmin = role === 'admin';
+  const [activeSegment, setActiveSegment] = useState<'text_to_meeting' | 'inbox'>(
+    isAdmin ? 'text_to_meeting' : 'inbox'
+  );
   const [reprocessingId, setReprocessingId] = useState<number | null>(null);
   const [reprocessSuccess, setReprocessSuccess] = useState<number | null>(null);
   const [reprocessError, setReprocessError] = useState<number | null>(null);
@@ -179,38 +184,40 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
         </div>
       </div>
 
-      {/* Segment Switcher */}
-      <div className="flex bg-slate-200/80 p-1 rounded-2xl gap-1">
-        <button
-          onClick={() => setActiveSegment('text_to_meeting')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-            activeSegment === 'text_to_meeting'
-              ? 'bg-white text-[#006A60] shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-          <span>{language === 'bn' ? 'বার্তা দিয়ে মিটিং তৈরি' : 'Text to Meeting'}</span>
-          <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded-full">
-            Gemini
-          </span>
-        </button>
+      {/* Segment Switcher (Admin only: regular staff have direct notices view) */}
+      {isAdmin && (
+        <div className="flex bg-slate-200/80 p-1 rounded-2xl gap-1">
+          <button
+            onClick={() => setActiveSegment('text_to_meeting')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+              activeSegment === 'text_to_meeting'
+                ? 'bg-white text-[#006A60] shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+            <span>{language === 'bn' ? 'বার্তা দিয়ে মিটিং তৈরি' : 'Text to Meeting'}</span>
+            <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded-full">
+              Gemini
+            </span>
+          </button>
 
-        <button
-          onClick={() => setActiveSegment('inbox')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-            activeSegment === 'inbox'
-              ? 'bg-white text-[#006A60] shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <MessageSquare className="w-3.5 h-3.5 text-sky-600" />
-          <span>{language === 'bn' ? 'টেলিগ্রাম বার্তা ফিড' : 'Messages Feed'}</span>
-          <span className="text-[10px] bg-sky-100 text-sky-800 font-bold px-1.5 py-0.2 rounded-full">
-            {toBengaliNumber(messages.length)}
-          </span>
-        </button>
-      </div>
+          <button
+            onClick={() => setActiveSegment('inbox')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+              activeSegment === 'inbox'
+                ? 'bg-white text-[#006A60] shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-sky-600" />
+            <span>{language === 'bn' ? 'টেলিগ্রাম বার্তা ফিড' : 'Messages Feed'}</span>
+            <span className="text-[10px] bg-sky-100 text-sky-800 font-bold px-1.5 py-0.2 rounded-full">
+              {toBengaliNumber(messages.length)}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Segment Content */}
       {activeSegment === 'text_to_meeting' ? (
@@ -314,41 +321,43 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {(msg.status === 'Needs Review' || msg.status === 'Review Required') && (
-                      <button
-                        onClick={onOpenReview}
-                        className="text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-lg transition cursor-pointer"
-                      >
-                        {language === 'bn' ? 'যাচাই করুন' : 'Review'}
-                      </button>
-                    )}
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      {(msg.status === 'Needs Review' || msg.status === 'Review Required') && (
+                        <button
+                          onClick={onOpenReview}
+                          className="text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-lg transition cursor-pointer"
+                        >
+                          {language === 'bn' ? 'যাচাই করুন' : 'Review'}
+                        </button>
+                      )}
 
-                    <button
-                      onClick={() => handleReprocess(msg)}
-                      disabled={isReprocessing}
-                      className="flex items-center gap-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition disabled:opacity-50 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
-                      <span>
-                        {isReprocessing
-                          ? language === 'bn'
-                            ? 'জেমিনাই এক্সট্র্যাক্ট করছে...'
-                            : 'Gemini Extracting...'
-                          : isSuccess
-                          ? language === 'bn'
-                            ? 'সম্পন্ন!'
-                            : 'Done!'
-                          : isFailed
-                          ? language === 'bn'
-                            ? 'ব্যর্থ হয়েছে'
-                            : 'Failed'
-                          : language === 'bn'
-                          ? 'পুনরায় এআই প্রসেস'
-                          : 'Reprocess with Gemini'}
-                      </span>
-                    </button>
-                  </div>
+                      <button
+                        onClick={() => handleReprocess(msg)}
+                        disabled={isReprocessing}
+                        className="flex items-center gap-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition disabled:opacity-50 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
+                        <span>
+                          {isReprocessing
+                            ? language === 'bn'
+                              ? 'জেমিনাই এক্সট্র্যাক্ট করছে...'
+                              : 'Gemini Extracting...'
+                            : isSuccess
+                            ? language === 'bn'
+                              ? 'সম্পন্ন!'
+                              : 'Done!'
+                            : isFailed
+                            ? language === 'bn'
+                              ? 'ব্যর্থ হয়েছে'
+                              : 'Failed'
+                            : language === 'bn'
+                            ? 'পুনরায় এআই প্রসেস'
+                            : 'Reprocess with Gemini'}
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             );

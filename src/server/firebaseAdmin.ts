@@ -73,15 +73,98 @@ export function removeUndefinedFields<T = any>(value: T): T {
   return cleaned as T;
 }
 
-export async function setAuthorizedUser(uid: string, data: { active: boolean; email?: string; role?: string; displayName?: string }): Promise<void> {
+export const INITIAL_ADMIN_EMAILS: Record<string, { label: string; role: 'admin' }> = {
+  'marufjb@gmail.com': { label: 'Maruf', role: 'admin' },
+  'nasir230171@gmail.com': { label: 'Principal', role: 'admin' },
+};
+
+export interface UserAuthProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string | null;
+  role: 'admin' | 'user';
+  active: boolean;
+}
+
+export async function setAuthorizedUser(uid: string, data: { active: boolean; email?: string; role?: string; displayName?: string; photoURL?: string }): Promise<void> {
   const docData = removeUndefinedFields({
     active: data.active,
     email: data.email || null,
-    role: data.role || 'staff',
+    role: data.role || 'user',
     displayName: data.displayName || null,
+    photoURL: data.photoURL || null,
     updatedAt: new Date().toISOString(),
   });
   await adminDb.collection('authorizedUsers').doc(uid).set(docData, { merge: true });
+}
+
+export async function ensureUserAuthorization(tokenDecoded: {
+  uid: string;
+  email?: string;
+  name?: string;
+  picture?: string;
+}): Promise<UserAuthProfile> {
+  const uid = tokenDecoded.uid;
+  const rawEmail = tokenDecoded.email || '';
+  const normalizedEmail = rawEmail.trim().toLowerCase();
+
+  const userDocRef = adminDb.collection('authorizedUsers').doc(uid);
+  const existingSnap = await userDocRef.get();
+  const existingData = existingSnap.exists ? existingSnap.data() : null;
+
+  // Determine role:
+  // If email matches INITIAL_ADMIN_EMAILS -> admin
+  // Else if existing record was already promoted to admin by another admin -> keep admin
+  // Otherwise -> default to "user"
+  let role: 'admin' | 'user' = 'user';
+  let defaultDisplayName = tokenDecoded.name || (normalizedEmail ? normalizedEmail.split('@')[0] : 'User');
+
+  if (normalizedEmail && INITIAL_ADMIN_EMAILS[normalizedEmail]) {
+    role = 'admin';
+    defaultDisplayName = tokenDecoded.name || INITIAL_ADMIN_EMAILS[normalizedEmail].label;
+  } else if (existingData && existingData.role === 'admin') {
+    role = 'admin';
+  }
+
+  const finalDisplayName = existingData?.displayName || defaultDisplayName;
+  const active = existingData?.active !== undefined ? existingData.active : true;
+  const photoURL = tokenDecoded.picture || existingData?.photoURL || null;
+
+  const dataToSave = removeUndefinedFields({
+    uid,
+    email: normalizedEmail,
+    displayName: finalDisplayName,
+    photoURL,
+    role,
+    active,
+    updatedAt: new Date().toISOString(),
+    ...(existingSnap.exists ? {} : { createdAt: new Date().toISOString() }),
+  });
+
+  await userDocRef.set(dataToSave, { merge: true });
+
+  return {
+    uid,
+    email: normalizedEmail,
+    displayName: finalDisplayName,
+    photoURL,
+    role,
+    active,
+  };
+}
+
+export async function getUserRoleAndActive(uid: string): Promise<{ role: 'admin' | 'user'; active: boolean; displayName?: string; email?: string } | null> {
+  const userDocRef = adminDb.collection('authorizedUsers').doc(uid);
+  const snap = await userDocRef.get();
+  if (!snap.exists) return null;
+  const data = snap.data();
+  return {
+    role: data?.role === 'admin' ? 'admin' : 'user',
+    active: data?.active === true,
+    displayName: data?.displayName,
+    email: data?.email,
+  };
 }
 
 export async function isUserAuthorized(uid: string): Promise<boolean> {
@@ -108,7 +191,7 @@ export interface NotificationDeliveryLog {
   deviceId: string;
   userId?: string;
   fcmToken: string;
-  type: 'reminder_120m' | 'reminder_30m' | 'reminder_custom' | 'morning_briefing' | 'test_push';
+  type: 'reminder_120m' | 'reminder_30m' | 'reminder_custom' | 'morning_briefing' | 'test_push' | 'announcement';
   title: string;
   body: string;
   status: 'sent' | 'failed';

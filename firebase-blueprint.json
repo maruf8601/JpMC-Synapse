@@ -179,9 +179,66 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["active"]
+    },
+    "UserPreference": {
+      "title": "UserPreference",
+      "description": "User preferences including about version seen flag",
+      "type": "object",
+      "properties": {
+        "aboutVersionSeen": { "type": "string" },
+        "language": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Popup announcements published by JpMC administrators",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "priority": { "type": "string", "enum": ["normal", "important", "urgent"] },
+        "displayMode": { "type": "string", "enum": ["show_once", "show_every_open", "require_acknowledgement"] },
+        "targetAudience": { "type": "string", "enum": ["everyone", "admins_only", "users_only"] },
+        "active": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["draft", "published", "expired"] },
+        "startAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "sendPush": { "type": "boolean" },
+        "pushSentAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "message", "priority", "displayMode", "targetAudience", "active", "status", "startAt", "expiresAt", "sendPush"]
+    },
+    "AnnouncementReceipt": {
+      "title": "AnnouncementReceipt",
+      "description": "User interaction receipt for an announcement",
+      "type": "object",
+      "properties": {
+        "announcementId": { "type": "string" },
+        "uid": { "type": "string" },
+        "seenAt": { "type": "string" },
+        "acknowledgedAt": { "type": "string" }
+      },
+      "required": ["announcementId", "uid", "seenAt"]
     }
   },
   "firestore": {
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Official institutional popup announcements"
+    },
+    "/announcementReceipts/{receiptId}": {
+      "schema": "AnnouncementReceipt",
+      "description": "User seen and acknowledgement status per announcement"
+    },
+    "/userPreferences/{userId}": {
+      "schema": "UserPreference",
+      "description": "Persistent onboarding and user preferences"
+    },
     "/authorizedUsers/{userId}": {
       "schema": "AuthorizedUser",
       "description": "Registry of active staff users authorized to access events and settings"

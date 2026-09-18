@@ -20,6 +20,9 @@ import {
   adminAuth,
   setAuthorizedUser,
   isUserAuthorized,
+  ensureUserAuthorization,
+  getUserRoleAndActive,
+  INITIAL_ADMIN_EMAILS,
   registerDeviceInFirestore,
   getActiveDevices,
   getTelegramMessagesFromFirestore,
@@ -37,6 +40,17 @@ import {
   sendFcmPushNotification,
   getDhakaTimeParts,
 } from './src/server/reminderScheduler';
+import {
+  createAnnouncementInFirestore,
+  updateAnnouncementInFirestore,
+  deleteAnnouncementFromFirestore,
+  getAllAnnouncementsForAdmin,
+  getActiveAnnouncementsForUser,
+  getAnnouncementReceipt,
+  recordUserSeenAnnouncement,
+  recordUserAcknowledgedAnnouncement,
+  sendAnnouncementPushBroadcast,
+} from './src/server/announcementAdmin';
 
 const PORT = 3000;
 
@@ -111,12 +125,71 @@ async function validateSchedulerAuth(req: Request, res: Response, next: NextFunc
 }
 
 /**
- * Authentication Middleware for Administrative / Mutation Endpoints
- * Supports:
- *  - Firebase ID Token (Bearer <token>)
- *  - Admin Secret (matching ADMIN_SECRET or SCHEDULER_SECRET)
+ * Strict RBAC Middleware: Requires Admin Role
+ * Allows:
+ *  - Firebase ID Token with verified role: 'admin' and active: true
+ *  - Machine-to-machine Admin Secret matching ADMIN_SECRET
  */
-async function validateAdminOrUserAuth(req: Request, res: Response, next: NextFunction) {
+async function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers['authorization'];
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  let token = '';
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  }
+
+  // Machine-to-machine admin secret bypass
+  if (adminSecret && token === adminSecret) {
+    (req as any).user = { uid: 'system_admin', role: 'admin', active: true };
+    return next();
+  }
+
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Authentication token required.' });
+  }
+
+  try {
+    const decoded = await adminAuth.verifyIdToken(token);
+    let authInfo = await getUserRoleAndActive(decoded.uid);
+
+    // If user is not yet in authorizedUsers, check if initial admin email
+    if (!authInfo) {
+      const email = (decoded.email || '').trim().toLowerCase();
+      if (email && INITIAL_ADMIN_EMAILS[email]) {
+        await ensureUserAuthorization({
+          uid: decoded.uid,
+          email: decoded.email,
+          name: decoded.name,
+          picture: decoded.picture,
+        });
+        authInfo = { role: 'admin', active: true };
+      }
+    }
+
+    if (!authInfo || !authInfo.active) {
+      return res.status(403).json({ error: 'Forbidden: Inactive or unauthorized account.' });
+    }
+
+    if (authInfo.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+    }
+
+    (req as any).user = {
+      ...decoded,
+      role: authInfo.role,
+      active: authInfo.active,
+    };
+    return next();
+  } catch (err: any) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
+  }
+}
+
+/**
+ * Middleware: Validates that the caller is an active authenticated user (Admin or User)
+ */
+async function validateActiveUserAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   const adminSecret = process.env.ADMIN_SECRET || process.env.SCHEDULER_SECRET;
 
@@ -129,24 +202,38 @@ async function validateAdminOrUserAuth(req: Request, res: Response, next: NextFu
     return next();
   }
 
-  if (token) {
-    try {
-      const decoded = await adminAuth.verifyIdToken(token);
-      (req as any).user = decoded;
-      return next();
-    } catch {
-      // invalid token
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Token required.' });
+  }
+
+  try {
+    const decoded = await adminAuth.verifyIdToken(token);
+    let authInfo = await getUserRoleAndActive(decoded.uid);
+
+    if (!authInfo) {
+      // Auto-initialize standard user if needed
+      await ensureUserAuthorization({
+        uid: decoded.uid,
+        email: decoded.email,
+        name: decoded.name,
+        picture: decoded.picture,
+      });
+      authInfo = { role: 'user', active: true };
     }
-  }
 
-  // Development bypass if no secret is configured
-  if (process.env.NODE_ENV !== 'production' && !adminSecret) {
+    if (!authInfo.active) {
+      return res.status(403).json({ error: 'Forbidden: Account is deactivated.' });
+    }
+
+    (req as any).user = {
+      ...decoded,
+      role: authInfo.role,
+      active: authInfo.active,
+    };
     return next();
+  } catch (err: any) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
   }
-
-  return res.status(401).json({
-    error: 'Unauthorized: Valid Firebase ID Token or Admin Secret required.',
-  });
 }
 
 async function startServer() {
@@ -301,8 +388,8 @@ async function startServer() {
     });
   });
 
-  // Set Telegram Webhook programmatically
-  app.post('/api/telegram/setup-webhook', validateAdminOrUserAuth, async (req, res) => {
+  // Set Telegram Webhook programmatically (Admin only)
+  app.post('/api/telegram/setup-webhook', requireAdminAuth, async (req, res) => {
     const appUrl = req.body?.appUrl || getPublicAppUrl(req);
     const secret = req.body?.secret || process.env.TELEGRAM_WEBHOOK_SECRET;
 
@@ -316,8 +403,8 @@ async function startServer() {
     res.json({ messages });
   });
 
-  // Reprocess Telegram message (re-downloads original PDF or extracts text with Gemini)
-  app.post('/api/telegram/reprocess', async (req, res) => {
+  // Reprocess Telegram message (Admin only)
+  app.post('/api/telegram/reprocess', requireAdminAuth, async (req, res) => {
     try {
       const { chatId, messageId, telegramFileId } = req.body || {};
       if (!chatId || messageId === undefined) {
@@ -376,33 +463,23 @@ async function startServer() {
     }
   });
 
-  // Create / Upsert Event canonically into Firestore
-  app.post('/api/events', async (req, res) => {
+  // Create / Upsert Event canonically into Firestore (Admin only)
+  app.post('/api/events', requireAdminAuth, async (req, res) => {
     try {
       const eventPayload = req.body?.event || req.body;
       if (!eventPayload || !eventPayload.title) {
         return res.status(400).json({ error: 'Valid event payload with title is required' });
       }
 
-      // Check for user token if available
-      const authHeader = req.headers['authorization'];
-      let userIdentifier = 'staff';
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        try {
-          const token = authHeader.substring(7).trim();
-          const decoded = await adminAuth.verifyIdToken(token);
-          userIdentifier = decoded.email || decoded.uid;
-        } catch {
-          // Fallback to payload or staff
-        }
-      }
+      const reqUser = (req as any).user;
+      const userIdentifier = reqUser?.email || reqUser?.uid || 'admin';
 
       const mergedPayload = {
         ...eventPayload,
         createdBy: eventPayload.createdBy || userIdentifier,
       };
 
-      console.log(`[API /api/events] Persisting canonical event: "${mergedPayload.title}" (source: ${mergedPayload.source || 'Manual'})`);
+      console.log(`[API /api/events] Persisting canonical event: "${mergedPayload.title}" (source: ${mergedPayload.source || 'Manual'}, by: ${userIdentifier})`);
       const savedEvent = await saveCanonicalEventToFirestore(mergedPayload);
       res.json({ success: true, event: savedEvent });
     } catch (err: any) {
@@ -411,8 +488,8 @@ async function startServer() {
     }
   });
 
-  // Update Event canonically in Firestore
-  app.put('/api/events/:id', async (req, res) => {
+  // Update Event canonically in Firestore (Admin only)
+  app.put('/api/events/:id', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const updates = req.body?.event || req.body;
@@ -429,8 +506,8 @@ async function startServer() {
     }
   });
 
-  // Delete Event canonically from Firestore
-  app.delete('/api/events/:id', async (req, res) => {
+  // Delete Event canonically from Firestore (Admin only)
+  app.delete('/api/events/:id', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const success = await deleteEventFromFirestore(id);
@@ -548,6 +625,221 @@ async function startServer() {
     }
   });
 
+  // Admin Broadcast Test Push Notification to all active devices
+  app.post('/api/notifications/test-broadcast', requireAdminAuth, async (req, res) => {
+    try {
+      const devices = await getActiveDevices();
+      let sentCount = 0;
+      for (const dev of devices) {
+        if (dev.fcmToken && !dev.fcmToken.startsWith('web_push_')) {
+          await sendFcmPushNotification({
+            device: dev,
+            title: '🔔 JpMC Synapse — প্রাতিষ্ঠানিক টেস্ট ব্রডকাস্ট',
+            body: 'জামালপুর মেডিকেল কলেজ শিডিউল সিস্টেমের পুশ নোটিফিকেশন সফলভাবে কাজ করছে।',
+            deliveryId: `broadcast_${dev.deviceId}_${Date.now()}`,
+            type: 'test_push',
+            url: '/?tab=home',
+          });
+          sentCount++;
+        }
+      }
+      res.json({
+        success: true,
+        deviceCount: devices.length,
+        dispatchedCount: sentCount,
+        message: `Broadcast completed for ${devices.length} registered device(s).`,
+      });
+    } catch (err: any) {
+      console.error('[API /api/notifications/test-broadcast] Error:', err);
+      res.status(500).json({ success: false, error: err?.message || 'Failed to broadcast test push' });
+    }
+  });
+
+  // ==========================================
+  // POPUP ANNOUNCEMENT SYSTEM (Admin & User)
+  // ==========================================
+
+  // Admin: List all announcements
+  app.get('/api/admin/announcements', requireAdminAuth, async (req, res) => {
+    try {
+      const list = await getAllAnnouncementsForAdmin();
+      res.json({ success: true, announcements: list });
+    } catch (err: any) {
+      console.error('[API /api/admin/announcements] Error:', err);
+      res.status(500).json({ error: err?.message || 'Failed to list announcements' });
+    }
+  });
+
+  // Admin: Create announcement
+  app.post('/api/admin/announcements', requireAdminAuth, async (req, res) => {
+    try {
+      const { title, message, priority, displayMode, targetAudience, active, status, startAt, expiresAt, sendPush } = req.body;
+      if (!title || !message) {
+        return res.status(400).json({ error: 'Title and message are required.' });
+      }
+
+      const adminUid = (req as any).user?.uid || 'admin';
+      const created = await createAnnouncementInFirestore(
+        {
+          title,
+          message,
+          priority,
+          displayMode,
+          targetAudience,
+          active: active !== false,
+          status: status || 'draft',
+          startAt,
+          expiresAt,
+          sendPush: Boolean(sendPush),
+        },
+        adminUid
+      );
+
+      let pushResult: any = null;
+      if (created.status === 'published' && created.active && created.sendPush) {
+        pushResult = await sendAnnouncementPushBroadcast(created.id);
+      }
+
+      res.json({ success: true, announcement: created, pushResult });
+    } catch (err: any) {
+      console.error('[API POST /api/admin/announcements] Error:', err);
+      res.status(500).json({ error: err?.message || 'Failed to create announcement' });
+    }
+  });
+
+  // Admin: Update announcement
+  app.put('/api/admin/announcements/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updated = await updateAnnouncementInFirestore(id, req.body);
+      if (!updated) {
+        return res.status(404).json({ error: 'Announcement not found' });
+      }
+      res.json({ success: true, announcement: updated });
+    } catch (err: any) {
+      console.error(`[API PUT /api/admin/announcements/${req.params.id}] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to update announcement' });
+    }
+  });
+
+  // Admin: Delete announcement
+  app.delete('/api/admin/announcements/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const success = await deleteAnnouncementFromFirestore(id);
+      res.json({ success, id });
+    } catch (err: any) {
+      console.error(`[API DELETE /api/admin/announcements/${req.params.id}] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to delete announcement' });
+    }
+  });
+
+  // Admin: Publish announcement
+  app.post('/api/admin/announcements/:id/publish', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updated = await updateAnnouncementInFirestore(id, {
+        status: 'published',
+        active: true,
+      });
+      if (!updated) {
+        return res.status(404).json({ error: 'Announcement not found' });
+      }
+
+      let pushResult: any = null;
+      if (updated.sendPush && !updated.pushSentAt) {
+        pushResult = await sendAnnouncementPushBroadcast(id);
+      }
+
+      res.json({ success: true, announcement: updated, pushResult });
+    } catch (err: any) {
+      console.error(`[API /api/admin/announcements/${req.params.id}/publish] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to publish announcement' });
+    }
+  });
+
+  // Admin: Unpublish announcement
+  app.post('/api/admin/announcements/:id/unpublish', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updated = await updateAnnouncementInFirestore(id, {
+        status: 'draft',
+        active: false,
+      });
+      if (!updated) {
+        return res.status(404).json({ error: 'Announcement not found' });
+      }
+      res.json({ success: true, announcement: updated });
+    } catch (err: any) {
+      console.error(`[API /api/admin/announcements/${req.params.id}/unpublish] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to unpublish announcement' });
+    }
+  });
+
+  // Admin: Trigger Announcement Push Broadcast
+  app.post('/api/admin/announcements/:id/send-push', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const force = req.body?.force === true;
+      const result = await sendAnnouncementPushBroadcast(id, force);
+      res.json(result);
+    } catch (err: any) {
+      console.error(`[API /api/admin/announcements/${req.params.id}/send-push] Error:`, err);
+      res.status(500).json({ success: false, error: err?.message || 'Failed to send announcement push' });
+    }
+  });
+
+  // User / App: Get active unexpired announcements for current authenticated user
+  app.get('/api/announcements/active', validateActiveUserAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const announcements = await getActiveAnnouncementsForUser(user.uid, user.role);
+      res.json({ success: true, announcements });
+    } catch (err: any) {
+      console.error('[API /api/announcements/active] Error:', err);
+      res.status(500).json({ error: err?.message || 'Failed to load active announcements' });
+    }
+  });
+
+  // User: Record seen state for an announcement
+  app.post('/api/announcements/:id/seen', validateActiveUserAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const { id } = req.params;
+      await recordUserSeenAnnouncement(id, user.uid);
+      res.json({ success: true, announcementId: id, uid: user.uid });
+    } catch (err: any) {
+      console.error(`[API /api/announcements/${req.params.id}/seen] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to record seen state' });
+    }
+  });
+
+  // User: Record acknowledgement for an announcement
+  app.post('/api/announcements/:id/acknowledge', validateActiveUserAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const { id } = req.params;
+      await recordUserAcknowledgedAnnouncement(id, user.uid);
+      res.json({ success: true, announcementId: id, uid: user.uid });
+    } catch (err: any) {
+      console.error(`[API /api/announcements/${req.params.id}/acknowledge] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to record acknowledgement' });
+    }
+  });
+
+  // User: Get receipt status
+  app.get('/api/announcements/:id/receipt', validateActiveUserAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const { id } = req.params;
+      const receipt = await getAnnouncementReceipt(id, user.uid);
+      res.json({ success: true, receipt });
+    } catch (err: any) {
+      console.error(`[API /api/announcements/${req.params.id}/receipt] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to get receipt' });
+    }
+  });
+
   // Notification & Scheduler Status
   app.get('/api/notifications/status', async (req, res) => {
     const devices = await getActiveDevices();
@@ -617,8 +909,8 @@ async function startServer() {
   });
 
   /**
-   * User Authorization Registration
-   * Called on Google Auth sign-in to ensure user has active status in Firestore authorizedUsers
+   * User Authorization Registration & RBAC profile setup
+   * Called on Google Auth sign-in to guarantee user has active status and valid role in authorizedUsers
    */
   app.post('/api/auth/ensure-authorized', async (req, res) => {
     try {
@@ -632,17 +924,59 @@ async function startServer() {
       }
 
       const decoded = await adminAuth.verifyIdToken(token);
-      await setAuthorizedUser(decoded.uid, {
-        active: true,
+      const profile = await ensureUserAuthorization({
+        uid: decoded.uid,
         email: decoded.email,
-        displayName: decoded.name || decoded.email,
-        role: 'staff',
+        name: decoded.name,
+        picture: decoded.picture,
       });
 
-      res.json({ success: true, uid: decoded.uid, active: true });
+      console.log(`[Auth] User authorized: ${profile.email} (${profile.displayName}) -> role: ${profile.role}`);
+      res.json({ success: true, profile });
     } catch (err: any) {
       console.error('[API /api/auth/ensure-authorized] Error:', err);
       res.status(401).json({ error: err?.message || 'Failed to authorize user' });
+    }
+  });
+
+  /**
+   * Get Current Authenticated User Profile & Role
+   */
+  app.get('/api/auth/profile', async (req, res) => {
+    try {
+      const authHeader = req.headers['authorization'];
+      let token = '';
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7).trim();
+      }
+      if (!token) {
+        return res.status(401).json({ error: 'Missing authorization token' });
+      }
+
+      const decoded = await adminAuth.verifyIdToken(token);
+      let authInfo = await getUserRoleAndActive(decoded.uid);
+      if (!authInfo) {
+        const profile = await ensureUserAuthorization({
+          uid: decoded.uid,
+          email: decoded.email,
+          name: decoded.name,
+          picture: decoded.picture,
+        });
+        return res.json({ profile });
+      }
+
+      res.json({
+        profile: {
+          uid: decoded.uid,
+          email: decoded.email || authInfo.email || '',
+          displayName: authInfo.displayName || decoded.name || 'User',
+          photoURL: decoded.picture || null,
+          role: authInfo.role,
+          active: authInfo.active,
+        },
+      });
+    } catch (err: any) {
+      res.status(401).json({ error: err?.message || 'Unauthorized' });
     }
   });
 
@@ -675,8 +1009,8 @@ async function startServer() {
     });
   });
 
-  // Save Reminder & Briefing Preferences
-  app.post('/api/settings/reminder-preferences', validateAdminOrUserAuth, async (req, res) => {
+  // Save Reminder & Briefing Preferences (Admin only)
+  app.post('/api/settings/reminder-preferences', requireAdminAuth, async (req, res) => {
     try {
       const { dailyBriefingTime, dailyBriefingEnabled, defaultReminder2h, defaultReminder30m, notifyWhenNoEventsToday } = req.body;
       const dataToSave = removeUndefinedFields({

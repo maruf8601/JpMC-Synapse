@@ -15,9 +15,7 @@ import {
   AlertCircle,
   ArrowRight,
   Filter,
-  FolderArchive,
-  CloudUpload,
-  Bot,
+  Plus,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -29,9 +27,15 @@ interface DashboardViewProps {
   onToggleComplete: (id: string, e: React.MouseEvent) => void;
   onNavigateToTab: (tab: NavigationTab) => void;
   onOpenReviewModal: () => void;
+  onOpenQuickAdd?: () => void;
   language: Language;
   selectedCategory: Category | 'all';
   onSelectCategory: (cat: Category | 'all') => void;
+  userProfile?: {
+    displayName?: string;
+    role?: 'admin' | 'user';
+    email?: string;
+  };
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -43,26 +47,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onToggleComplete,
   onNavigateToTab,
   onOpenReviewModal,
+  onOpenQuickAdd,
   language,
   selectedCategory,
   onSelectCategory,
+  userProfile,
 }) => {
   const dhakaNow = getDhakaNow();
   const currentHour = dhakaNow.getHours();
+  const currentMinutes = dhakaNow.getMinutes();
+  const totalMinutes = currentHour * 60 + currentMinutes;
 
-  // Dynamic Bengali greeting based on time of day
+  // Exact Asia/Dhaka Greeting Logic:
+  // Morning (05:00 - 11:59): 'শুভ সকাল' / 'Good morning'
+  // Noon/Afternoon (12:00 - 16:59): 'শুভ দুপুর' / 'Good afternoon'
+  // Late afternoon (17:00 - 18:29): 'শুভ বিকেল' / 'Good afternoon'
+  // Evening/Night (18:30 - 04:59): 'শুভ সন্ধ্যা' / 'Good evening'
   let greetingBn = 'শুভ সকাল';
-  let greetingEn = 'Good Morning';
-  if (currentHour >= 12 && currentHour < 16) {
+  let greetingEn = 'Good morning';
+
+  if (totalMinutes >= 300 && totalMinutes < 720) {
+    greetingBn = 'শুভ সকাল';
+    greetingEn = 'Good morning';
+  } else if (totalMinutes >= 720 && totalMinutes < 1020) {
     greetingBn = 'শুভ দুপুর';
-    greetingEn = 'Good Afternoon';
-  } else if (currentHour >= 16 && currentHour < 19) {
-    greetingBn = 'শুভ বিকাল';
-    greetingEn = 'Good Evening';
-  } else if (currentHour >= 19 || currentHour < 5) {
-    greetingBn = 'শুভ রাত্রি';
-    greetingEn = 'Good Evening';
+    greetingEn = 'Good afternoon';
+  } else if (totalMinutes >= 1020 && totalMinutes < 1110) {
+    greetingBn = 'শুভ বিকেল';
+    greetingEn = 'Good afternoon';
+  } else {
+    greetingBn = 'শুভ সন্ধ্যা';
+    greetingEn = 'Good evening';
   }
+
+  const isAdmin = userProfile?.role === 'admin';
+  const userDisplayName = userProfile?.displayName || (isAdmin ? 'অ্যাডমিন' : 'স্টাফ');
 
   const formattedDate = formatBengaliDate(dhakaNow);
 
@@ -84,19 +103,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="relative z-10">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-teal-200 bg-teal-800/60 px-2.5 py-1 rounded-full border border-teal-600/40">
-              {language === 'bn' ? 'জামালপুর মেডিকেল কলেজ' : 'Jamalpur Medical College'}
-            </span>
-            <span className="text-xs text-teal-200/90 font-medium">
-              {language === 'bn' ? formattedDate : dhakaNow.toLocaleDateString('en-GB')}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-teal-200 bg-teal-800/60 px-2.5 py-1 rounded-full border border-teal-600/40">
+                {language === 'bn' ? 'জামালপুর মেডিকেল কলেজ' : 'Jamalpur Medical College'}
+              </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  isAdmin
+                    ? 'bg-amber-400/20 text-amber-200 border-amber-300/40'
+                    : 'bg-teal-200/20 text-teal-100 border-teal-300/30'
+                }`}
+              >
+                {isAdmin
+                  ? language === 'bn'
+                    ? 'অ্যাডমিন'
+                    : 'Admin'
+                  : language === 'bn'
+                  ? 'স্টাফ'
+                  : 'Staff'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {isAdmin && onOpenQuickAdd && (
+                <button
+                  id="dashboard-header-quick-add-btn"
+                  onClick={onOpenQuickAdd}
+                  className="inline-flex items-center gap-1.5 bg-white/95 hover:bg-white text-[#006A60] font-bold text-xs px-3 py-1 rounded-full shadow-sm hover:shadow transition-all active:scale-95 cursor-pointer border border-teal-100"
+                  title="নতুন কর্মসূচি যোগ করুন"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>{language === 'bn' ? 'কর্মসূচি যোগ' : 'Quick Add'}</span>
+                </button>
+              )}
+              <span className="text-xs text-teal-200/90 font-medium">
+                {language === 'bn' ? formattedDate : dhakaNow.toLocaleDateString('en-GB')}
+              </span>
+            </div>
           </div>
 
           <div className="mt-3">
-            <h2 className="text-2xl font-bold tracking-tight text-white">
-              {language === 'bn' ? greetingBn : greetingEn}
+            <h2 className="text-2xl font-bold tracking-tight text-white font-['Tiro_Bangla',sans-serif]">
+              {language === 'bn'
+                ? `${greetingBn}, ${userDisplayName}`
+                : `${greetingEn}, ${userDisplayName}`}
             </h2>
-            <p className="text-sm text-teal-100 font-medium mt-1">
+            <p className="text-sm text-teal-100 font-medium mt-1 font-['Tiro_Bangla',sans-serif]">
               {language === 'bn' ? (
                 todayEvents.length > 0 ? (
                   <>
@@ -106,15 +157,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   'আজ কোনো নির্ধারিত কর্মসূচি নেই'
                 )
               ) : (
-                  `You have ${todayEvents.length} scheduled event${todayEvents.length === 1 ? '' : 's'} today`
+                `You have ${todayEvents.length} scheduled event${todayEvents.length === 1 ? '' : 's'} today`
               )}
             </p>
           </div>
         </div>
       </div>
 
-      {/* Review Required Action Banner (if pending items exist) */}
-      {pendingReviewEvents.length > 0 && (
+      {/* Review Required Action Banner (Admin only & if pending items exist) */}
+      {isAdmin && pendingReviewEvents.length > 0 && (
         <div
           id="review-alert-banner"
           onClick={onOpenReviewModal}
@@ -265,69 +316,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Google Drive Past Events History Sync Card */}
-      <div
-        id="drive-history-shortcut-banner"
-        onClick={() => onNavigateToTab('history')}
-        className="cursor-pointer bg-gradient-to-r from-teal-50 via-emerald-50/50 to-slate-50 border border-teal-200 rounded-2xl p-3 flex items-center justify-between hover:border-teal-400 transition-all shadow-xs group"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#006A60] text-white flex items-center justify-center shadow-xs">
-            <FolderArchive className="w-4.5 h-4.5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-800">
-                {language === 'bn' ? 'গুগল ড্রাইভ ইতিহাস সংরক্ষণ' : 'Google Drive Event Archives'}
-              </span>
-              <span className="text-[9px] font-bold bg-teal-100 text-teal-800 px-1.5 py-0.2 rounded-full uppercase tracking-wider">
-                Drive Sync
-              </span>
+      {/* Quick Add Action Card (Restricted to Admin users only) */}
+      {isAdmin && onOpenQuickAdd && (
+        <div
+          id="dashboard-admin-quick-add-banner"
+          onClick={onOpenQuickAdd}
+          className="cursor-pointer bg-gradient-to-r from-teal-50 via-emerald-50/60 to-slate-50 border border-teal-200/90 rounded-2xl p-3 flex items-center justify-between hover:border-teal-400 transition-all shadow-xs group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#006A60] text-white flex items-center justify-center shadow-xs">
+              <Plus className="w-5 h-5 stroke-[2.5]" />
             </div>
-            <p className="text-[11px] text-slate-600 mt-0.5">
-              {language === 'bn'
-                ? 'পূর্ববর্তী কর্মসূচির রেকর্ড গুগল ড্রাইভে ক্লাউড ব্যাকআপ করুন'
-                : 'Archive previous meetings & session history to your Drive'}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 text-xs font-bold text-[#006A60] group-hover:translate-x-1 transition-transform">
-          <span>{language === 'bn' ? 'খুলুন' : 'Open'}</span>
-          <ArrowRight className="w-3.5 h-3.5" />
-        </div>
-      </div>
-
-      {/* Telegram Text-to-Meeting Shortcut Card */}
-      <div
-        id="telegram-text-meeting-shortcut-banner"
-        onClick={() => onNavigateToTab('inbox')}
-        className="cursor-pointer bg-gradient-to-r from-sky-50 via-blue-50/60 to-slate-50 border border-sky-200 rounded-2xl p-3 flex items-center justify-between hover:border-sky-400 transition-all shadow-xs group"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-sky-700 text-white flex items-center justify-center shadow-xs">
-            <Bot className="w-4.5 h-4.5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-800">
-                {language === 'bn' ? 'টেলিগ্রাম বার্তা থেকে মিটিং তৈরি' : 'Create Meeting from Telegram Text'}
-              </span>
-              <span className="text-[9px] font-bold bg-sky-100 text-sky-800 px-1.5 py-0.2 rounded-full uppercase tracking-wider">
-                Instant NLP
-              </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800">
+                  {language === 'bn' ? 'দ্রুত কর্মসূচি যোগ করুন (কুইক অ্যাড)' : 'Quick Add Schedule'}
+                </span>
+                <span className="text-[9px] font-bold bg-teal-100 text-[#006A60] px-1.5 py-0.2 rounded-full uppercase tracking-wider">
+                  Admin Only
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                {language === 'bn'
+                  ? 'নতুন সভা, সেমিনার বা প্রাতিষ্ঠানিক কর্মসূচির বিবরণ দ্রুত যুক্ত করুন'
+                  : 'Quickly create a new institutional meeting or official event'}
+              </p>
             </div>
-            <p className="text-[11px] text-slate-600 mt-0.5">
-              {language === 'bn'
-                ? 'বার্তা লিখলেই স্বয়ংক্রিয়ভাবে তারিখ, সময় ও স্থান চিহ্নিত করে সূচি তৈরি হবে'
-                : 'Type instructions to automatically extract date, time & venue'}
-            </p>
+          </div>
+          <div className="flex items-center gap-1 text-xs font-bold text-[#006A60] group-hover:translate-x-1 transition-transform">
+            <span>{language === 'bn' ? 'যোগ করুন' : 'Add'}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
           </div>
         </div>
-        <div className="flex items-center gap-1 text-xs font-bold text-sky-700 group-hover:translate-x-1 transition-transform">
-          <span>{language === 'bn' ? 'তৈরি করুন' : 'Create'}</span>
-          <ArrowRight className="w-3.5 h-3.5" />
-        </div>
-      </div>
+      )}
 
       {/* Category Filter Horizontal Scroll */}
       <div className="pt-1">

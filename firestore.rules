@@ -12,17 +12,24 @@ service cloud.firestore {
     }
 
     // Check if the authenticated user is marked active in authorizedUsers registry
-    function isAuthorized() {
+    function isActiveUser() {
       return isAuthenticated() && (
         exists(/databases/$(database)/documents/authorizedUsers/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/authorizedUsers/$(request.auth.uid)).data.active == true
       );
     }
 
+    // Check if the authenticated active user has the admin role
+    function isAdmin() {
+      return isActiveUser() && (
+        get(/databases/$(database)/documents/authorizedUsers/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
     // Authorized Users Registry (Managed by Admin SDK, read by authenticated users)
     match /authorizedUsers/{userId} {
       allow read: if isAuthenticated();
-      allow write: if false; // Server Admin SDK only
+      allow write: if false; // Server Admin SDK only! No client can write or promote themselves
     }
 
     // User Profile Documents
@@ -35,53 +42,85 @@ service cloud.firestore {
       }
     }
 
-    // Device Registry: Signed-in user may manage only their own device records
+    // User Preferences (About modal seen state, language, theme)
+    match /userPreferences/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Device Registry: Signed-in user may manage only their own device records, Admin may inspect
     match /devices/{deviceId} {
-      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAuthorized());
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAuthorized());
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
     }
 
-    // Events Collection: Authorized staff users can read and manage schedules
+    // Events Collection:
+    // Active users (admin and user) can read events
+    // ONLY admins can create, update, or delete events
     match /events/{eventId} {
-      allow read: if isAuthorized();
-      allow create, update, delete: if isAuthorized();
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
     }
 
-    // Ingested Telegram Messages: Authorized users may view, but CLIENT CANNOT WRITE (Server Admin only)
+    // Ingested Telegram Messages: Active users may view, but CLIENT CANNOT WRITE (Server Admin only)
     match /telegramMessages/{messageDocId} {
-      allow read: if isAuthorized();
-      allow write: if false; // Client must not create, update, or delete raw Telegram ingestion records
+      allow read: if isActiveUser();
+      allow write: if false;
     }
 
-    // Notification Delivery Audit Logs: Client cannot write (Server Admin only)
+    // Notification Delivery Audit Logs: Admin only (Server Admin only writes)
     match /notificationDeliveries/{deliveryId} {
-      allow read: if isAuthorized();
+      allow read: if isAdmin();
       allow write: if false;
     }
 
-    // Background Processing Jobs: Client cannot write (Server Admin only)
+    // Background Processing Jobs: Admin only (Server Admin only writes)
     match /processingJobs/{jobId} {
-      allow read: if isAuthorized();
+      allow read: if isAdmin();
       allow write: if false;
     }
 
-    // App and System Settings: Authorized users only
+    // App and System Settings: Active users can read, only Admin can write
     match /settings/{settingId} {
-      allow read: if isAuthorized();
-      allow write: if isAuthorized();
+      allow read: if isActiveUser();
+      allow write: if isAdmin();
     }
 
-    // Sync Metadata (Google Calendar & Auto-Backup status): Authorized users only
+    // Sync Metadata (Google Calendar & Auto-Backup status): Active users read, Admin writes
     match /syncMetadata/{metaId} {
-      allow read: if isAuthorized();
-      allow write: if isAuthorized();
+      allow read: if isActiveUser();
+      allow write: if isAdmin();
     }
 
-    // Scheduled Reminders Collection: Authorized users only
+    // Scheduled Reminders Collection: Active users read, Admin writes
     match /reminders/{reminderId} {
-      allow read: if isAuthorized();
-      allow write: if isAuthorized();
+      allow read: if isActiveUser();
+      allow write: if isAdmin();
+    }
+
+    // Announcements Collection:
+    // Active authorized users may read announcements
+    // Only Administrators may create, update, or delete announcements
+    match /announcements/{announcementId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Announcement User Receipts (seen & acknowledgement status):
+    // Authenticated users may only create, update, or read their own interaction receipt.
+    // Document ID is canonical format: `${announcementId}_${request.auth.uid}`
+    match /announcementReceipts/{receiptId} {
+      allow read: if isAuthenticated() && (
+        (resource == null) ||
+        (resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        (resource != null && resource.data.uid == request.auth.uid) &&
+        (request.resource.data.uid == request.auth.uid)
+      );
+      allow delete: if isAdmin();
     }
   }
 }

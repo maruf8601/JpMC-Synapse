@@ -114,6 +114,39 @@ export interface TelegramMessageEntity {
   processedAt?: string;
 }
 
-export type NavigationTab = 'home' | 'calendar' | 'history' | 'add' | 'inbox' | 'settings';
+export type NavigationTab = 'home' | 'calendar' | 'inbox' | 'admin' | 'settings' | 'history' | 'add';
 
 export type Language = 'bn' | 'en';
+
+export type AnnouncementPriority = 'normal' | 'important' | 'urgent';
+
+export type AnnouncementDisplayMode = 'show_once' | 'show_every_open' | 'require_acknowledgement';
+
+export type AnnouncementTargetAudience = 'everyone' | 'admins_only' | 'users_only';
+
+export type AnnouncementStatus = 'draft' | 'published' | 'expired';
+
+export interface AnnouncementEntity {
+  id: string;
+  title: string;
+  message: string;
+  priority: AnnouncementPriority;
+  displayMode: AnnouncementDisplayMode;
+  targetAudience: AnnouncementTargetAudience;
+  active: boolean;
+  status: AnnouncementStatus;
+  startAt: string; // ISO string
+  expiresAt: string; // ISO string
+  sendPush: boolean;
+  pushSentAt?: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnnouncementReceipt {
+  announcementId: string;
+  uid: string;
+  seenAt: string;
+  acknowledgedAt?: string | null;
+}

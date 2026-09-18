@@ -16,10 +16,14 @@ import {
   Calendar as CalendarIcon,
   RefreshCw,
   CheckCircle2,
+  FolderArchive,
+  History as HistoryIcon,
+  ArrowRight,
 } from 'lucide-react';
 import { syncWithGoogleCalendar } from '../services/googleCalendarService';
 import { auth } from '../services/firebaseClient';
 import { googleSignIn } from '../services/googleAuth';
+import { EventHistoryDriveView } from './EventHistoryDriveView';
 
 interface CalendarViewProps {
   events: EventEntity[];
@@ -34,6 +38,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   onSelectEvent,
   language,
 }) => {
+  const [activeSection, setActiveSection] = useState<'calendar' | 'history'>('calendar');
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
   const [selectedDateStr, setSelectedDateStr] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -41,6 +46,9 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('month');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const pastEvents = events.filter((e) => e.eventDate < todayStr || e.isCompleted);
 
   // Days in month calculation
   const year = currentDate.getFullYear();
@@ -105,63 +113,100 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   return (
     <div id="calendar-view" className="space-y-4 pb-20">
-      {/* Header & Mode Switcher */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-slate-800 tracking-tight">
-            {language === 'bn' ? 'ক্যালেন্ডার সূচি' : 'Calendar View'}
-          </h2>
-          <p className="text-xs text-slate-500">
-            {language === 'bn'
-              ? 'তারিখ অনুযায়ী জামালপুর মেডিকেল কলেজের সকল কর্মসূচি'
-              : 'Institutional schedules by date'}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Real Google Calendar Sync Button */}
-          <button
-            onClick={handleGoogleCalendarSync}
-            disabled={isSyncing}
-            className="flex items-center gap-1.5 text-xs bg-white hover:bg-teal-50 text-[#006A60] font-semibold px-2.5 py-1.5 rounded-xl border border-teal-200 shadow-2xs transition cursor-pointer disabled:opacity-50"
-            title="Sync with Google Calendar"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>
-              {isSyncing
-                ? language === 'bn'
-                  ? 'সিঙ্ক হচ্ছে...'
-                  : 'Syncing...'
-                : language === 'bn'
-                ? 'গুগল ক্যালেন্ডার সিঙ্ক'
-                : 'Google Calendar'}
-            </span>
-          </button>
-
-          {/* View Mode Toggle */}
-          <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200">
-            {(['month', 'week', 'day'] as CalendarMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setCalendarMode(mode)}
-                className={`text-xs px-2.5 py-1 rounded-lg font-medium capitalize transition cursor-pointer ${
-                  calendarMode === mode
-                    ? 'bg-white text-[#006A60] font-bold shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {language === 'bn'
-                  ? mode === 'month'
-                    ? 'মাস'
-                    : mode === 'week'
-                    ? 'সপ্তাহ'
-                    : 'দিন'
-                  : mode}
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Top Segmented Control for Calendar vs History */}
+      <div className="flex bg-slate-200/80 p-1 rounded-2xl max-w-md mx-auto shadow-inner">
+        <button
+          type="button"
+          onClick={() => setActiveSection('calendar')}
+          className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+            activeSection === 'calendar'
+              ? 'bg-white text-[#006A60] shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <CalendarIcon className="w-3.5 h-3.5" />
+          <span>{language === 'bn' ? 'ক্যালেন্ডার ও সূচি' : 'Calendar & Schedule'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveSection('history')}
+          className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+            activeSection === 'history'
+              ? 'bg-white text-[#006A60] shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <FolderArchive className="w-3.5 h-3.5" />
+          <span>{language === 'bn' ? 'পূর্ববর্তী ইতিহাস ও ড্রাইভ' : 'History & Drive Archive'}</span>
+        </button>
       </div>
+
+      {activeSection === 'history' ? (
+        <EventHistoryDriveView
+          pastEvents={pastEvents}
+          allEvents={events}
+          language={language}
+          onSelectEvent={onSelectEvent}
+        />
+      ) : (
+        <>
+          {/* Header & Mode Switcher */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 tracking-tight">
+                {language === 'bn' ? 'ক্যালেন্ডার সূচি' : 'Calendar View'}
+              </h2>
+              <p className="text-xs text-slate-500">
+                {language === 'bn'
+                  ? 'তারিখ অনুযায়ী জামালপুর মেডিকেল কলেজের সকল কর্মসূচি'
+                  : 'Institutional schedules by date'}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Real Google Calendar Sync Button */}
+              <button
+                onClick={handleGoogleCalendarSync}
+                disabled={isSyncing}
+                className="flex items-center gap-1.5 text-xs bg-white hover:bg-teal-50 text-[#006A60] font-semibold px-2.5 py-1.5 rounded-xl border border-teal-200 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                title="Sync with Google Calendar"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>
+                  {isSyncing
+                    ? language === 'bn'
+                      ? 'সিঙ্ক হচ্ছে...'
+                      : 'Syncing...'
+                    : language === 'bn'
+                    ? 'গুগল ক্যালেন্ডার সিঙ্ক'
+                    : 'Google Calendar'}
+                </span>
+              </button>
+
+              {/* View Mode Toggle */}
+              <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+                {(['month', 'week', 'day'] as CalendarMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setCalendarMode(mode)}
+                    className={`text-xs px-2.5 py-1 rounded-lg font-medium capitalize transition cursor-pointer ${
+                      calendarMode === mode
+                        ? 'bg-white text-[#006A60] font-bold shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {language === 'bn'
+                      ? mode === 'month'
+                        ? 'মাস'
+                        : mode === 'week'
+                        ? 'সপ্তাহ'
+                        : 'দিন'
+                      : mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
 
       {/* Sync Status Banner */}
       {syncStatusMsg && (
@@ -309,6 +354,36 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           </div>
         )}
       </div>
-    </div>
-  );
+
+      {/* History & Drive Backup Quick Link Banner */}
+      <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200/80 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-2xs">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#006A60] text-white flex items-center justify-center shrink-0 shadow-xs">
+            <FolderArchive className="w-5 h-5 text-teal-100" />
+          </div>
+          <div>
+            <h4 className="text-xs font-bold text-slate-800">
+              {language === 'bn' ? 'আগের কর্মসূচির ইতিহাস ও গুগল ড্রাইভ ব্যাকআপ' : 'Past Events History & Google Drive Backup'}
+            </h4>
+            <p className="text-[11px] text-slate-600">
+              {language === 'bn'
+                ? `পূর্বে সম্পন্ন হওয়া ${toBengaliNumber(pastEvents.length)}টি কর্মসূচি সংরক্ষণ এবং গুগল ড্রাইভে এক্সপোর্ট করুন`
+                : `Archive and export ${pastEvents.length} past events directly to Google Drive`}
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('history')}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white text-xs font-bold transition shadow-xs cursor-pointer shrink-0"
+        >
+          <span>{language === 'bn' ? 'ইতিহাস দেখুন' : 'View History'}</span>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </>
+  )}
+</div>
+);
 };

@@ -6,12 +6,18 @@ interface AboutModalProps {
   isOpen: boolean;
   onClose: () => void;
   language: Language;
+  isFirstLogin?: boolean;
+  onGetStarted?: () => void;
+  isSavingPreference?: boolean;
 }
 
 export const AboutModal: React.FC<AboutModalProps> = ({
   isOpen,
   onClose,
   language,
+  isFirstLogin = false,
+  onGetStarted,
+  isSavingPreference = false,
 }) => {
   const [logoFailed, setLogoFailed] = useState(false);
   const [photoFailed, setPhotoFailed] = useState(false);
@@ -22,7 +28,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
     <div
       id="about-modal-overlay"
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
-      onClick={onClose}
+      onClick={isFirstLogin ? undefined : onClose}
     >
       <div
         id="about-modal"
@@ -31,13 +37,15 @@ export const AboutModal: React.FC<AboutModalProps> = ({
       >
         {/* Header */}
         <div className="bg-gradient-to-br from-[#006A60] to-[#004D40] text-white p-6 text-center relative shrink-0">
-          <button
-            onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-teal-700/60 text-teal-100 transition cursor-pointer"
-            aria-label="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {!isFirstLogin && (
+            <button
+              onClick={onClose}
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-teal-700/60 text-teal-100 transition cursor-pointer"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
 
           {/* Official College Logo with Fallback */}
           <div className="flex justify-center mb-3">
@@ -169,12 +177,23 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="w-full py-2.5 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-bold transition shadow-sm cursor-pointer"
-          >
-            {language === 'bn' ? 'বন্ধ করুন' : 'Close'}
-          </button>
+          {isFirstLogin ? (
+            <button
+              id="about-modal-get-started-btn"
+              onClick={onGetStarted || onClose}
+              disabled={isSavingPreference}
+              className="w-full py-3 rounded-2xl bg-gradient-to-r from-[#006A60] to-[#004D40] hover:from-teal-700 hover:to-teal-900 active:scale-98 text-white font-bold text-sm transition shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+            >
+              <span>{language === 'bn' ? 'শুরু করুন' : 'Get Started'}</span>
+            </button>
+          ) : (
+            <button
+              onClick={onClose}
+              className="w-full py-2.5 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-bold transition shadow-sm cursor-pointer"
+            >
+              {language === 'bn' ? 'বন্ধ করুন' : 'Close'}
+            </button>
+          )}
         </div>
       </div>
     </div>

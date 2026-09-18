@@ -35,6 +35,7 @@ interface EventDetailsModalProps {
   onDelete: (id: string) => void;
   onEdit: (event: EventEntity) => void;
   language: Language;
+  role?: 'admin' | 'user';
 }
 
 export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
@@ -44,7 +45,9 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
   onDelete,
   onEdit,
   language,
+  role = 'user',
 }) => {
+  const isAdmin = role === 'admin';
   const [showOriginalNotice, setShowOriginalNotice] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [isGCalSynced, setIsGCalSynced] = useState(
@@ -396,28 +399,30 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              onClick={() => onEdit(event)}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-semibold text-xs shadow-xs transition"
-            >
-              <Edit3 className="w-4 h-4" />
-              <span>{language === 'bn' ? 'সম্পাদনা করুন' : 'Edit Event'}</span>
-            </button>
+          {isAdmin && (
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={() => onEdit(event)}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-semibold text-xs shadow-xs transition"
+              >
+                <Edit3 className="w-4 h-4" />
+                <span>{language === 'bn' ? 'সম্পাদনা করুন' : 'Edit Event'}</span>
+              </button>
 
-            <button
-              onClick={() => {
-                if (window.confirm(language === 'bn' ? 'আপনি কি এই কর্মসূচিটি মুছে ফেলতে নিশ্চিত?' : 'Are you sure you want to delete this event?')) {
-                  onDelete(event.id);
-                  onClose();
-                }
-              }}
-              className="p-2.5 rounded-xl text-rose-600 hover:bg-rose-50 border border-rose-200 transition"
-              title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete'}
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
+              <button
+                onClick={() => {
+                  if (window.confirm(language === 'bn' ? 'আপনি কি এই কর্মসূচিটি মুছে ফেলতে নিশ্চিত?' : 'Are you sure you want to delete this event?')) {
+                    onDelete(event.id);
+                    onClose();
+                  }
+                }}
+                className="p-2.5 rounded-xl text-rose-600 hover:bg-rose-50 border border-rose-200 transition"
+                title={language === 'bn' ? 'মুছে ফেলুন' : 'Delete'}
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

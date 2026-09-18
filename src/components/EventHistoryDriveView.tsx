@@ -327,13 +327,10 @@ export const EventHistoryDriveView: React.FC<EventHistoryDriveViewProps> = ({
                 <span>{isSigningIn ? (language === 'bn' ? 'সাইন ইন হচ্ছে...' : 'Signing in...') : (language === 'bn' ? 'গুগল সাইন ইন' : 'Sign in with Google')}</span>
               </button>
             ) : (
-              <button
-                onClick={handleSignOut}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs text-slate-600 font-semibold transition cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>{language === 'bn' ? 'লগআউট' : 'Sign Out'}</span>
-              </button>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-teal-200 bg-teal-50 text-xs text-teal-800 font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                <span>{language === 'bn' ? 'সক্রিয় অ্যাকাউন্ট' : 'Active Account'}</span>
+              </span>
             )}
           </div>
         </div>
