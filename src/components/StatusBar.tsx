@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Wifi, Battery, ShieldCheck } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
 import { toBengaliNumber } from '../domain/constants';
 
 interface StatusBarProps {
@@ -7,6 +8,12 @@ interface StatusBarProps {
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({ language }) => {
+  // CRITICAL: When running inside Capacitor native Android APK, completely remove/hide the simulated status bar.
+  // Android already provides the real system status bar; duplicate status bars must never appear.
+  if (Capacitor.isNativePlatform()) {
+    return null;
+  }
+
   const [timeStr, setTimeStr] = useState<string>('09:41');
 
   useEffect(() => {

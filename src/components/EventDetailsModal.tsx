@@ -81,7 +81,7 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
     setIsSyncingGCal(true);
     setGcalError(null);
     try {
-      const result = await createGoogleCalendarEvent(event);
+      const result = await createGoogleCalendarEvent(event, { interactive: true });
       setIsGCalSynced(true);
       if (result.htmlLink) {
         setGcalSuccessLink(result.htmlLink);
@@ -95,18 +95,24 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
         lastCalendarSyncAt: new Date().toISOString(),
       });
     } catch (err: any) {
-      console.error('[EventDetailsModal] Google Calendar sync failed:', err);
-      if (
+      if (err?.message === 'CALENDAR_AUTH_CANCELLED') {
+        setGcalError(
+          language === 'bn'
+            ? 'ক্যালেন্ডার অনুমোদন উইন্ডো বন্ধ করা হয়েছে। সিঙ্ক করতে আবার চেষ্টা করুন।'
+            : 'Google Calendar authorization window was closed. Click again to retry.'
+        );
+      } else if (
         err?.message?.includes('GOOGLE_CALENDAR_AUTH_REQUIRED') ||
         err?.message?.includes('OAuth') ||
         err?.message?.includes('Sign in')
       ) {
         setGcalError(
           language === 'bn'
-            ? 'গুগল সাইন-ইন প্রয়োজন। অনুগ্রহ করে সেটিংস ট্যাব থেকে গুগল অ্যাকাউন্ট যুক্ত করুন।'
-            : 'Google Sign-in required. Please connect your Google account in Settings.'
+            ? 'গুগল ক্যালেন্ডার অনুমোদন প্রয়োজন। নিচে বাটনে ক্লিক করে অনুমোদন দিন।'
+            : 'Google Calendar authorization required. Click below to authorize and sync.'
         );
       } else {
+        console.warn('[EventDetailsModal] Google Calendar sync issue:', err?.message || err);
         setGcalError(
           err?.message ||
             (language === 'bn' ? 'গুগল ক্যালেন্ডার সিঙ্ক ব্যর্থ হয়েছে' : 'Google Calendar sync failed')
@@ -275,11 +281,32 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
 
           {/* GCal Status or Error Message */}
           {gcalError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="font-semibold">{language === 'bn' ? 'গুগল ক্যালেন্ডার সিঙ্ক ত্রুটি' : 'Google Calendar Sync Error'}</p>
-                <p className="text-[11px] text-rose-700 mt-0.5">{gcalError}</p>
+            <div className="p-3 bg-amber-50/90 border border-amber-200 rounded-xl text-xs text-amber-900 flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-semibold">{language === 'bn' ? 'গুগল ক্যালেন্ডার তথ্য' : 'Google Calendar Information'}</p>
+                  <p className="text-[11px] text-amber-800 mt-0.5">{gcalError}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleSyncToGCal}
+                  disabled={isSyncingGCal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#006A60] hover:bg-teal-700 text-white font-semibold text-xs transition cursor-pointer disabled:opacity-50"
+                >
+                  {isSyncingGCal ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CalendarPlus className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {isSyncingGCal
+                      ? (language === 'bn' ? 'অনুমোদন হচ্ছে...' : 'Authorizing...')
+                      : (language === 'bn' ? 'ক্যালেন্ডার কানেক্ট ও সিঙ্ক করুন' : 'Connect & Sync Calendar')}
+                  </span>
+                </button>
               </div>
             </div>
           )}

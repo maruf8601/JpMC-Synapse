@@ -6,27 +6,53 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
-export const db = getFirestore(app);
 
+/**
+ * Initialize Cloud Firestore with experimentalForceLongPolling enabled.
+ * In cloud preview iframes, Cloud Run, mobile webviews, and proxied networks,
+ * standard WebChannel chunked streaming can fail or be blocked by proxies,
+ * causing [code=unavailable] "Could not reach Cloud Firestore backend" errors.
+ * Long polling uses standard HTTP POST requests that work reliably in all environments.
+ */
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  });
+} catch {
+  // If already initialized in current context
+  firestoreInstance = getFirestore(app);
+}
+
+export const db = firestoreInstance;
+
+/**
+ * Validates Firestore / backend connectivity on demand without throwing unhandled exceptions.
+ */
 export async function testFirestoreConnection(): Promise<boolean> {
+  if (typeof window === 'undefined') return true;
+  if (!navigator.onLine) {
+    return false;
+  }
+
   try {
-    await getDocFromServer(doc(db, 'settings', 'connectivity_check'));
-    return true;
-  } catch (error: any) {
-    if (error?.message && error.message.includes('the client is offline')) {
-      console.warn('[Firestore] Client is in offline mode.');
-      return false;
-    }
-    return true;
+    const res = await fetch('/api/health', { method: 'GET', cache: 'no-store' });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
-// Initial connection check on module boot
-testFirestoreConnection().catch((err) => {
-  console.warn('[Firestore] Initial boot check:', err?.message || err);
-});

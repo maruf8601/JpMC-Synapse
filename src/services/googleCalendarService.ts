@@ -6,7 +6,7 @@
  */
 
 import { EventEntity } from '../domain/models';
-import { getAccessToken } from './googleAuth';
+import { getAccessToken, requestCalendarAccess } from './googleAuth';
 import { eventRepository } from '../data/eventRepository';
 
 export interface CalendarSyncResult {
@@ -28,8 +28,23 @@ function toDhakaIsoDateTime(dateStr: string, timeStr?: string | null): string {
 /**
  * Creates an event in Google Calendar
  */
-export async function createGoogleCalendarEvent(event: EventEntity): Promise<{ id: string; htmlLink?: string }> {
-  const token = await getAccessToken();
+export async function createGoogleCalendarEvent(
+  event: EventEntity,
+  options?: { interactive?: boolean }
+): Promise<{ id: string; htmlLink?: string }> {
+  let token = await getAccessToken();
+
+  if (!token && options?.interactive) {
+    try {
+      token = await requestCalendarAccess('select_account');
+    } catch (authErr: any) {
+      if (authErr?.message === 'POPUP_CLOSED' || authErr?.message === 'ACCESS_DENIED') {
+        throw new Error('CALENDAR_AUTH_CANCELLED');
+      }
+      throw authErr;
+    }
+  }
+
   if (!token) {
     throw new Error('GOOGLE_CALENDAR_AUTH_REQUIRED: Please sign in with Google to sync with Calendar.');
   }

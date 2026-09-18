@@ -68,23 +68,50 @@ export interface EventEntity {
   isCompleted?: boolean;
   ambiguities?: string[];
   reminders?: ReminderEntity[];
+  createdBy?: string;
+  visibility?: string;
   createdAt: string;
   updatedAt: string;
 }
 
+export type TelegramMessageStatus =
+  | 'Received'
+  | 'Processing'
+  | 'Processed'
+  | 'Schedule Created'
+  | 'Review Required'
+  | 'Needs Review'
+  | 'Not a Schedule'
+  | 'Duplicate'
+  | 'Download Failed'
+  | 'Gemini Processing Failed'
+  | 'Processing Failed'
+  | 'Unsupported Document';
+
 export interface TelegramMessageEntity {
   id: number;
+  messageId?: number;
   chatId: string;
   senderName: string;
   senderRole?: string;
+  originalSenderName?: string;
+  originalSenderRole?: string;
   timestamp: string;
   rawText: string;
   hasDocument: boolean;
   documentType?: 'pdf' | 'image' | 'text' | null;
   documentName?: string | null;
-  status: 'Schedule Created' | 'Needs Review' | 'Not a Schedule' | 'Duplicate' | 'Processing Failed';
+  mimeType?: string;
+  fileSize?: number;
+  telegramFileId?: string;
+  caption?: string;
+  processingStatus?: 'received' | 'processing' | 'processed' | 'download_failed' | 'gemini_failed' | 'unsupported';
+  extractionStatus?: 'schedule_candidate' | 'needs_review' | 'not_a_schedule' | 'failed' | 'pending';
+  status: TelegramMessageStatus;
   extractedEventIds: string[];
   confidence: number;
+  receivedAt?: string;
+  processedAt?: string;
 }
 
 export type NavigationTab = 'home' | 'calendar' | 'history' | 'add' | 'inbox' | 'settings';

@@ -22,6 +22,7 @@ import {
   Check,
   ShieldCheck,
   LogIn,
+  Loader2,
 } from 'lucide-react';
 import { syncWithGoogleCalendar } from '../services/googleCalendarService';
 import {
@@ -31,7 +32,11 @@ import {
 import {
   googleSignIn,
   logoutGoogle,
-  hasCachedGoogleAuth,
+  requestCalendarAccess,
+  logoutCalendar,
+  subscribeCalendarAuth,
+  getCalendarAuthState,
+  CalendarAuthState,
 } from '../services/googleAuth';
 import {
   getNotificationPermission,
@@ -46,6 +51,12 @@ import {
   DevicePushStatus,
 } from '../services/pushNotificationService';
 import { eventRepository } from '../data/eventRepository';
+import {
+  apiFetch,
+  apiUrl,
+  fetchTelegramStatus,
+  RENDER_PRODUCTION_BACKEND_URL,
+} from '../config/api';
 
 interface SettingsViewProps {
   language: Language;
@@ -85,7 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     // 2. Client-side environment variable (if provided)
     const envPublicUrl = (import.meta as any).env?.VITE_PUBLIC_APP_URL || (import.meta as any).env?.VITE_APP_URL;
-    if (envPublicUrl && !envPublicUrl.includes('localhost')) {
+    if (envPublicUrl && !envPublicUrl.includes('localhost') && !envPublicUrl.includes('127.0.0.1')) {
       return `${envPublicUrl.replace(/\/$/, '')}/api/telegram/webhook`;
     }
 
@@ -94,8 +105,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       return `${window.location.origin}/api/telegram/webhook`;
     }
 
-    // 4. Default canonical production Render URL
-    return 'https://jpmc-synapse.onrender.com/api/telegram/webhook';
+    // 4. Default canonical production Render URL if valid
+    if (RENDER_PRODUCTION_BACKEND_URL && !RENDER_PRODUCTION_BACKEND_URL.includes('localhost') && !RENDER_PRODUCTION_BACKEND_URL.includes('127.0.0.1')) {
+      return `${RENDER_PRODUCTION_BACKEND_URL}/api/telegram/webhook`;
+    }
+
+    return '';
   };
 
   // Gemini AI real status
@@ -104,13 +119,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     model: string;
   }>({
     configured: false,
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash (Auto-failover: gemini-3.1-flash-lite)',
   });
 
   // Google User & Calendar real state
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(
     auth.currentUser?.email || null
   );
+  const [calendarAuth, setCalendarAuth] = useState<CalendarAuthState>(getCalendarAuthState());
+  const [isAuthorizingCalendar, setIsAuthorizingCalendar] = useState(false);
+  const [calendarAuthMessage, setCalendarAuthMessage] = useState<string | null>(null);
   const [isCalendarSyncing, setIsCalendarSyncing] = useState(false);
   const [calendarSyncResult, setCalendarSyncResult] = useState<string | null>(null);
 
@@ -139,23 +157,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Load live server statuses
   useEffect(() => {
-    // 1. Fetch comprehensive integration status
-    fetch('/api/integrations/status')
+    // 1. Fetch Telegram Bot status directly from server API (supports native Capacitor & web)
+    fetchTelegramStatus()
+      .then((tgData) => {
+        setTelegramStatus({
+          configured: tgData.configured,
+          webhookUrl: derivePublicWebhookUrl(tgData.webhookUrl),
+          totalMessagesReceived: tgData.totalMessagesReceived || tgData.processedCount || 0,
+          lastReceived: tgData.lastReceived || null,
+        });
+      })
+      .catch((err) => {
+        console.warn('[Settings] Telegram status notice:', err);
+      });
+
+    // 2. Fetch comprehensive integration status
+    apiFetch('/api/integrations/status')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) {
           if (data.telegram) {
-            setTelegramStatus({
-              configured: Boolean(data.telegram.configured),
-              webhookUrl: derivePublicWebhookUrl(data.telegram.webhookUrl),
-              totalMessagesReceived: data.telegram.recentCount || 0,
-              lastReceived: data.telegram.lastMessageAt || null,
-            });
+            setTelegramStatus((prev) => ({
+              configured: Boolean(data.telegram.configured) || prev.configured,
+              webhookUrl: derivePublicWebhookUrl(data.telegram.webhookUrl || prev.webhookUrl),
+              totalMessagesReceived: data.telegram.totalMessagesReceived ?? data.telegram.recentCount ?? prev.totalMessagesReceived,
+              lastReceived: data.telegram.lastMessageAt || data.telegram.lastReceived || prev.lastReceived,
+            }));
           }
           if (data.gemini) {
             setGeminiStatus({
               configured: Boolean(data.gemini.configured),
-              model: data.gemini.model || 'gemini-2.5-flash',
+              model: data.gemini.model || 'gemini-3.8-flash (Auto-failover)',
             });
           }
           if (data.firestore) {
@@ -166,12 +198,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       .catch(() => {
         setTelegramStatus((prev) => ({
           ...prev,
-          webhookUrl: derivePublicWebhookUrl(),
+          webhookUrl: derivePublicWebhookUrl(prev.webhookUrl),
         }));
       });
 
-    // 2. Fetch Notification & Scheduler Status
-    fetch('/api/notifications/status')
+    // 3. Fetch Notification & Scheduler Status
+    apiFetch('/api/notifications/status')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) {
@@ -186,17 +218,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setDevicePushStatus(status);
     });
 
-    // 4. Auth listener for Google
+    // 4. Auth listener for Google Staff Account
     const unsubscribeAuth = auth.onAuthStateChanged((user) => {
       setCurrentUserEmail(user?.email || null);
     });
 
-    // 5. Test Firestore directly
+    // 5. Calendar Auth listener for Google Calendar
+    const unsubscribeCal = subscribeCalendarAuth((state) => {
+      setCalendarAuth(state);
+    });
+
+    // 6. Test Firestore directly
     testFirestoreConnection().then((connected) => {
       setIsFirestoreConnected(connected);
     });
 
-    return () => unsubscribeAuth();
+    return () => {
+      unsubscribeAuth();
+      unsubscribeCal();
+    };
   }, []);
 
   const handleEnableFCM = async () => {
@@ -208,6 +248,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setDevicePushStatus(updated);
       setNotificationPermission(updated.permission as any);
       if (res.success) {
+        // Refresh registered device count
+        apiFetch('/api/notifications/status')
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (d && typeof d.registeredDevicesCount === 'number') {
+              setRegisteredDevicesCount(d.registeredDevicesCount);
+            }
+          })
+          .catch(() => {});
+
         setTestPushResult(
           language === 'bn'
             ? 'এফসিএম পুশ নোটিফিকেশন সফলভাবে সক্রিয় হয়েছে!'
@@ -252,7 +302,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     };
 
     try {
-      await fetch('/api/settings/reminder-preferences', {
+      await apiFetch('/api/settings/reminder-preferences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -280,17 +330,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           setCurrentUserEmail(res.user.email);
         }
       } catch (err: any) {
-        alert(err?.message || 'Google Sign-in was cancelled or blocked.');
+        if (err?.message !== 'POPUP_CLOSED') {
+          alert(err?.message || 'Google Sign-in was cancelled or blocked.');
+        }
       }
     }
   };
 
-  const handleCalendarSyncNow = async () => {
-    if (!currentUserEmail) {
-      alert(
+  const handleConnectCalendar = async () => {
+    setIsAuthorizingCalendar(true);
+    setCalendarAuthMessage(null);
+    try {
+      await requestCalendarAccess('consent');
+      setCalendarAuthMessage(
         language === 'bn'
-          ? 'গুগল ক্যালেন্ডার সিঙ্কের পূর্বে আপনার গুগল অ্যাকাউন্টে সাইন ইন করুন।'
-          : 'Please sign in with Google first before syncing.'
+          ? 'গুগল ক্যালেন্ডার পারমিশন সফলভাবে অনুমোদিত ও যাচাই হয়েছে!'
+          : 'Google Calendar successfully authorized and verified!'
+      );
+    } catch (err: any) {
+      console.warn('[SettingsView] Calendar auth error:', err);
+      if (err?.message === 'POPUP_CLOSED') {
+        setCalendarAuthMessage(
+          language === 'bn'
+            ? 'পপআপ বন্ধ করা হয়েছে। কানেক্ট করতে পুনরায় চেষ্টা করুন।'
+            : 'Popup window closed before completion. Please retry.'
+        );
+      } else if (err?.message === 'POPUP_BLOCKED') {
+        setCalendarAuthMessage(
+          language === 'bn'
+            ? 'ব্রাউজার পপআপ আটকে দিয়েছে। ব্রাউজার বারে Popups Allow করুন।'
+            : 'Popup was blocked by browser. Please allow popups for this site.'
+        );
+      } else {
+        setCalendarAuthMessage(
+          err?.message || (language === 'bn' ? 'ক্যালেন্ডার অনুমোদন ব্যর্থ হয়েছে।' : 'Calendar authorization failed.')
+        );
+      }
+    } finally {
+      setIsAuthorizingCalendar(false);
+    }
+  };
+
+  const handleDisconnectCalendar = () => {
+    logoutCalendar();
+    setCalendarAuthMessage(
+      language === 'bn' ? 'গুগল ক্যালেন্ডার ডিসকানেক্ট করা হয়েছে।' : 'Google Calendar disconnected.'
+    );
+  };
+
+  const handleCalendarSyncNow = async () => {
+    if (!calendarAuth.isAuthorized) {
+      setCalendarAuthMessage(
+        language === 'bn'
+          ? 'গুগল ক্যালেন্ডার সিঙ্কের পূর্বে ক্যালেন্ডার পারমিশন কানেক্ট করুন।'
+          : 'Please connect and authorize Google Calendar before syncing.'
       );
       return;
     }
@@ -306,8 +399,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } catch (err: any) {
       setCalendarSyncResult(
         language === 'bn'
-          ? `সিঙ্ক ব্যর্থ: ${err?.message || 'অনুগ্রহ করে পুনরায় সাইন ইন করুন'}`
-          : `Sync failed: ${err?.message || 'Please sign in again'}`
+          ? `সিঙ্ক ব্যর্থ: ${err?.message || 'পুনরায় ক্যালেন্ডার কানেক্ট করুন'}`
+          : `Sync failed: ${err?.message || 'Please reconnect Google Calendar'}`
       );
     } finally {
       setIsCalendarSyncing(false);
@@ -421,22 +514,67 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           {/* Webhook endpoint copy row */}
-          <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 flex items-center justify-between text-[11px]">
-            <span className="font-mono text-slate-600 truncate mr-2">
-              {derivePublicWebhookUrl(telegramStatus.webhookUrl)}
-            </span>
-            <button
-              onClick={handleCopyWebhook}
-              className="flex items-center gap-1 font-semibold text-[#006A60] bg-white px-2 py-1 rounded border border-slate-200 shadow-2xs shrink-0 cursor-pointer hover:bg-slate-50"
-            >
-              {isCopiedWebhook ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-              <span>{isCopiedWebhook ? (language === 'bn' ? 'কপি হয়েছে' : 'Copied') : (language === 'bn' ? 'কপি' : 'Copy')}</span>
-            </button>
+          {(() => {
+            const webhookUrl = derivePublicWebhookUrl(telegramStatus.webhookUrl);
+            return (
+              <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 flex items-center justify-between text-[11px]">
+                <span className={`font-mono truncate mr-2 ${webhookUrl ? 'text-slate-600' : 'text-amber-700 italic'}`}>
+                  {webhookUrl || (language === 'bn' ? 'পাবলিক হোস্ট ইউআরএল কনফিগার করা হয়নি' : 'Public host URL not configured')}
+                </span>
+                {webhookUrl && (
+                  <button
+                    onClick={handleCopyWebhook}
+                    className="flex items-center gap-1 font-semibold text-[#006A60] bg-white px-2 py-1 rounded border border-slate-200 shadow-2xs shrink-0 cursor-pointer hover:bg-slate-50"
+                  >
+                    {isCopiedWebhook ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                    <span>{isCopiedWebhook ? (language === 'bn' ? 'কপি হয়েছে' : 'Copied') : (language === 'bn' ? 'কপি' : 'Copy')}</span>
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Staff Google Institutional Account (Firebase Auth) */}
+        <div className="py-2.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-800">
+                {language === 'bn' ? 'প্রাতিষ্ঠানিক অ্যাকাউন্ট (Staff Account)' : 'Institutional Staff Account'}
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                {currentUserEmail
+                  ? `${currentUserEmail} • ${language === 'bn' ? 'অনুমোদিত স্টাফ' : 'Authorized Staff'}`
+                  : language === 'bn'
+                  ? 'কোন অ্যাকাউন্ট সাইন ইন করা নেই'
+                  : 'No account signed in'}
+              </p>
+            </div>
           </div>
+
+          <button
+            onClick={handleGoogleSignInToggle}
+            className={`text-xs font-semibold px-3 py-1 rounded-full border transition cursor-pointer ${
+              currentUserEmail
+                ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                : 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+            }`}
+          >
+            {currentUserEmail
+              ? language === 'bn'
+                ? 'লগআউট'
+                : 'Sign out'
+              : language === 'bn'
+              ? 'গুগল সাইন ইন'
+              : 'Sign in with Google'}
+          </button>
         </div>
 
         {/* Google Calendar Real OAuth & Sync */}
-        <div className="py-2.5 border-b border-slate-100 space-y-2">
+        <div className="py-2.5 border-b border-slate-100 space-y-2.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
@@ -447,37 +585,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   {language === 'bn' ? 'গুগল ক্যালেন্ডার (Google Calendar API)' : 'Google Calendar API'}
                 </h4>
                 <p className="text-[11px] text-slate-500">
-                  {currentUserEmail
-                    ? currentUserEmail
+                  {calendarAuth.status === 'connected'
+                    ? `${calendarAuth.email || 'Primary Calendar'} • ${
+                        language === 'bn' ? 'অনুমোদিত ও যাচাইকৃত' : 'Authorized & verified'
+                      }`
+                    : calendarAuth.status === 'checking'
+                    ? language === 'bn'
+                      ? 'যাচাই করা হচ্ছে...'
+                      : 'Verifying calendar access...'
+                    : calendarAuth.status === 'error'
+                    ? calendarAuth.errorMessage || (language === 'bn' ? 'অনুমোদনে ত্রুটি' : 'Authorization error')
                     : language === 'bn'
-                    ? 'কানেক্ট করা হয়নি (লগইন প্রয়োজন)'
-                    : 'Not connected (Sign in required)'}
+                    ? 'ক্যালেন্ডার পারমিশন প্রয়োজন (calendar.events)'
+                    : 'Awaiting calendar.events scope'}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                onClick={handleGoogleSignInToggle}
-                className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition cursor-pointer ${
-                  currentUserEmail
-                    ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
-                    : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${
+                  calendarAuth.status === 'connected'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : calendarAuth.status === 'checking'
+                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                    : 'bg-slate-50 text-slate-700 border-slate-200'
                 }`}
               >
-                {currentUserEmail
+                {calendarAuth.status === 'connected'
                   ? language === 'bn'
-                    ? 'লগআউট'
-                    : 'Logout'
+                    ? 'সংযুক্ত ✓'
+                    : 'Connected'
+                  : calendarAuth.status === 'checking'
+                  ? language === 'bn'
+                    ? 'যাচাই হচ্ছে...'
+                    : 'Checking...'
                   : language === 'bn'
-                  ? 'গুগল লগইন'
-                  : 'Sign in'}
-              </button>
+                  ? 'অনুমোদন বাকি'
+                  : 'Not Connected'}
+              </span>
+
+              {calendarAuth.isAuthorized ? (
+                <button
+                  onClick={handleDisconnectCalendar}
+                  className="text-xs font-semibold px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  {language === 'bn' ? 'ডিসকানেক্ট' : 'Disconnect'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleConnectCalendar}
+                  disabled={isAuthorizingCalendar}
+                  className="text-xs font-semibold px-3 py-1 rounded-full border border-teal-600 bg-[#006A60] hover:bg-teal-700 text-white shadow-2xs transition cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                >
+                  {isAuthorizingCalendar && <Loader2 className="w-3 h-3 animate-spin" />}
+                  <span>
+                    {isAuthorizingCalendar
+                      ? language === 'bn'
+                        ? 'অনুমোদন হচ্ছে...'
+                        : 'Connecting...'
+                      : language === 'bn'
+                      ? 'ক্যালেন্ডার কানেক্ট'
+                      : 'Connect Calendar'}
+                  </span>
+                </button>
+              )}
             </div>
           </div>
 
-          {currentUserEmail && (
-            <div className="flex items-center justify-between pt-1">
+          {/* Sync actions & result message */}
+          {calendarAuth.isAuthorized && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <button
                 onClick={handleCalendarSyncNow}
                 disabled={isCalendarSyncing}
@@ -494,11 +672,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     : 'Sync with Google Calendar'}
                 </span>
               </button>
+
               {calendarSyncResult && (
                 <span className="text-[11px] text-teal-800 font-medium">
                   {calendarSyncResult}
                 </span>
               )}
+            </div>
+          )}
+
+          {calendarAuthMessage && (
+            <div className="p-2 rounded-lg bg-teal-50/80 border border-teal-200 text-teal-900 text-[11px]">
+              {calendarAuthMessage}
             </div>
           )}
         </div>
@@ -575,10 +760,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <h3 className="font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
           <span className="flex items-center gap-1.5">
             <Bell className="w-4 h-4 text-teal-700" />
-            <span>{language === 'bn' ? 'রিমাইন্ডার ও নোটিফিকেশন সিস্টেম' : 'Real Reminder & Notification Engine'}</span>
+            <span>{language === 'bn' ? 'পুশ নোটিফিকেশন সেটিংস' : 'Push Notifications'}</span>
           </span>
           <span
-            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
               notificationPermission === 'granted'
                 ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
                 : notificationPermission === 'denied'
@@ -587,115 +772,154 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             {notificationPermission === 'granted'
-              ? language === 'bn'
-                ? 'অনুমোদিত (Granted)'
-                : 'Granted'
+              ? (language === 'bn' ? 'অনুমোদিত (Granted)' : 'Granted')
               : notificationPermission === 'denied'
-              ? language === 'bn'
-                ? 'অস্বীকৃত (Denied)'
-                : 'Denied'
-              : language === 'bn'
-              ? 'অনুরোধ প্রয়োজন'
-              : 'Prompt Required'}
+              ? (language === 'bn' ? 'অস্বীকৃত (Denied)' : 'Denied')
+              : (language === 'bn' ? 'অনুরোধ করা হয়নি (Not Enabled)' : 'Not Enabled')}
           </span>
         </h3>
 
-        <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-200/80 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="font-bold text-teal-950 flex items-center gap-1.5">
-                <span>{language === 'bn' ? 'ব্রাউজার ও পিডব্লিউএ পুশ নোটিফিকেশন' : 'Browser & PWA Notifications'}</span>
-                {devicePushStatus?.hasToken && (
-                  <span className="text-[10px] bg-teal-200 text-teal-900 font-bold px-1.5 py-0.2 rounded-full">
-                    FCM Active
-                  </span>
-                )}
-              </h4>
-              <p className="text-[11px] text-teal-800">
-                {language === 'bn'
-                  ? 'অ্যাপ বা ব্রাউজার বন্ধ থাকলেও সার্ভার ব্যাকগ্রাউন্ড থেকে ২ ঘণ্টা ও ৩০ মিনিট পূর্বে বিজ্ঞপ্তি পাঠাবে।'
-                  : 'Delivers background push alerts 2h & 30m before meetings even when app/browser is closed.'}
-              </p>
+        <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-200/80 space-y-3">
+          <div>
+            <h4 className="font-bold text-teal-950">
+              {language === 'bn' ? 'ব্রাউজার ও পিডব্লিউএ পুশ রিমাইন্ডার' : 'Browser & PWA Web Push Alerts'}
+            </h4>
+            <p className="text-[11px] text-teal-800">
+              {language === 'bn'
+                ? 'অ্যাপ বা ব্রাউজার বন্ধ থাকলেও সার্ভার ব্যাকগ্রাউন্ড থেকে ২ ঘণ্টা ও ৩০ মিনিট পূর্বে বিজ্ঞপ্তি পাঠাবে।'
+                : 'Delivers background push alerts 2h & 30m before meetings even when app/browser is closed.'}
+            </p>
+          </div>
+
+          {/* Status Presentation Grid */}
+          <div className="bg-white/90 rounded-xl p-2.5 border border-teal-200/70 text-[11px] text-slate-600 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="flex items-center justify-between py-0.5">
+              <span className="text-slate-500">
+                {language === 'bn' ? 'পারমিশন:' : 'Permission:'}
+              </span>
+              <span className={`font-semibold ${
+                notificationPermission === 'granted'
+                  ? 'text-emerald-700'
+                  : notificationPermission === 'denied'
+                  ? 'text-rose-700'
+                  : 'text-amber-700'
+              }`}>
+                {notificationPermission === 'granted'
+                  ? 'Granted'
+                  : notificationPermission === 'denied'
+                  ? 'Denied'
+                  : 'Not Enabled'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between py-0.5">
+              <span className="text-slate-500">
+                {language === 'bn' ? 'ডিভাইস রেজিস্ট্রেশন:' : 'Device Registration:'}
+              </span>
+              <span className={`font-semibold ${
+                devicePushStatus?.hasToken && notificationPermission === 'granted'
+                  ? 'text-emerald-700'
+                  : 'text-slate-600'
+              }`}>
+                {devicePushStatus?.hasToken && notificationPermission === 'granted'
+                  ? (language === 'bn' ? 'নিবন্ধিত (Registered)' : 'Registered')
+                  : (language === 'bn' ? 'অনিবন্ধিত (Not Registered)' : 'Not Registered')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between py-0.5">
+              <span className="text-slate-500">
+                {language === 'bn' ? 'পুশ সার্ভিস:' : 'Push Service:'}
+              </span>
+              <span className={`font-semibold ${
+                devicePushStatus?.hasToken && notificationPermission === 'granted'
+                  ? 'text-emerald-700'
+                  : 'text-amber-700'
+              }`}>
+                {devicePushStatus?.hasToken && notificationPermission === 'granted'
+                  ? (language === 'bn' ? 'সক্রিয় (Active)' : 'Active')
+                  : (language === 'bn' ? 'কনফিগারেশন প্রয়োজন' : 'Configuration Required')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between py-0.5">
+              <span className="text-slate-500">
+                {language === 'bn' ? 'নিবন্ধিত পুশ ডিভাইস:' : 'Registered Push Devices:'}
+              </span>
+              <span className="font-semibold text-slate-800">
+                {registeredDevicesCount > 0
+                  ? (language === 'bn' ? `${registeredDevicesCount}টি ডিভাইস` : `${registeredDevicesCount} device(s)`)
+                  : (language === 'bn' ? '০টি ডিভাইস' : '0 devices')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between py-0.5 sm:col-span-2 text-[10px] text-slate-400 font-mono border-t border-slate-100 pt-1">
+              <span>Platform: {devicePushStatus?.platform?.toUpperCase() || 'WEB'}</span>
+              <span className="truncate max-w-[200px]">ID: {devicePushStatus?.deviceId || 'dev-local'}</span>
             </div>
           </div>
 
           {/* FCM Push Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-teal-200/60">
-            {!devicePushStatus?.hasToken ? (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {notificationPermission !== 'granted' ? (
               <button
                 onClick={handleEnableFCM}
-                disabled={isEnablingPush}
-                className="bg-[#006A60] hover:bg-teal-700 disabled:opacity-50 text-white font-bold px-3 py-1.5 rounded-lg shadow-2xs transition cursor-pointer text-xs flex items-center gap-1.5"
+                disabled={isEnablingPush || notificationPermission === 'denied'}
+                className="bg-[#006A60] hover:bg-teal-700 disabled:opacity-50 text-white font-bold px-3.5 py-1.5 rounded-lg shadow-2xs transition cursor-pointer text-xs flex items-center gap-1.5"
               >
                 <Bell className="w-3.5 h-3.5" />
                 <span>
                   {isEnablingPush
-                    ? language === 'bn'
-                      ? 'টোকেন সংযুক্ত হচ্ছে...'
-                      : 'Activating...'
-                    : language === 'bn'
-                    ? 'এফসিএম পুশ সক্রিয় করুন'
-                    : 'Enable FCM Web Push'}
+                    ? (language === 'bn' ? 'সক্রিয় হচ্ছে...' : 'Activating...')
+                    : (language === 'bn' ? 'নোটিফিকেশন সক্রিয় করুন' : 'Enable Notifications')}
+                </span>
+              </button>
+            ) : !devicePushStatus?.hasToken ? (
+              <button
+                onClick={handleEnableFCM}
+                disabled={isEnablingPush}
+                className="bg-[#006A60] hover:bg-teal-700 disabled:opacity-50 text-white font-bold px-3.5 py-1.5 rounded-lg shadow-2xs transition cursor-pointer text-xs flex items-center gap-1.5"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                <span>
+                  {isEnablingPush
+                    ? (language === 'bn' ? 'টোকেন প্রস্তুত হচ্ছে...' : 'Registering Token...')
+                    : (language === 'bn' ? 'টোকেন নিবন্ধন করুন' : 'Register Push Token')}
                 </span>
               </button>
             ) : (
               <button
                 onClick={handleSendServerTestPush}
                 disabled={isSendingTestPush}
-                className="bg-white hover:bg-teal-50 text-[#006A60] border border-teal-300 font-bold px-3 py-1.5 rounded-lg shadow-2xs transition cursor-pointer text-xs flex items-center gap-1.5 disabled:opacity-50"
+                className="bg-white hover:bg-teal-50 text-[#006A60] border border-teal-300 font-bold px-3.5 py-1.5 rounded-lg shadow-2xs transition cursor-pointer text-xs flex items-center gap-1.5 disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSendingTestPush ? 'animate-spin' : ''}`} />
                 <span>
                   {isSendingTestPush
-                    ? language === 'bn'
-                      ? 'টেস্ট পুশ পাঠানো হচ্ছে...'
-                      : 'Sending Push...'
-                    : language === 'bn'
-                    ? 'সার্ভার পুশ নোটিফিকেশন পরীক্ষা'
-                    : 'Send Test Server Push'}
+                    ? (language === 'bn' ? 'টেস্ট পুশ পাঠানো হচ্ছে...' : 'Sending Push...')
+                    : (language === 'bn' ? 'সার্ভার পুশ নোটিফিকেশন পরীক্ষা' : 'Send Test Server Push')}
                 </span>
               </button>
             )}
 
             <button
               onClick={handleTestNotification}
-              className="bg-teal-100/70 hover:bg-teal-200 text-teal-900 border border-teal-300/80 font-medium px-2.5 py-1.5 rounded-lg text-xs"
+              className="bg-teal-100/70 hover:bg-teal-200 text-teal-900 border border-teal-300/80 font-medium px-2.5 py-1.5 rounded-lg text-xs transition"
             >
               {language === 'bn' ? 'লোকাল চিম সাউন্ড' : 'Local Sound Chime'}
             </button>
           </div>
 
-          {/* Live Device & Scheduler Info */}
-          <div className="bg-white/80 rounded-lg p-2 border border-teal-200/60 text-[11px] text-slate-600 flex flex-col gap-1">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-700">
-                {language === 'bn' ? 'সার্ভার শিডিউলার মোড:' : 'Scheduler Mode:'}
-              </span>
-              <span className="font-bold text-teal-800">
-                {schedulerStatus?.isRunning
-                  ? (language === 'bn' ? 'ইন-প্রসেস টিক সক্রিয়' : 'In-Process Tick Active')
-                  : (language === 'bn' ? 'গুগল ক্লাউড শিডিউলার প্রস্তুত' : 'Google Cloud Scheduler Ready')}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500">
-                {language === 'bn' ? 'নিবন্ধিত পুশ ডিভাইস:' : 'Registered Push Devices:'}
-              </span>
-              <span className="font-semibold text-slate-700">
-                {registeredDevicesCount > 0
-                  ? (language === 'bn' ? `${registeredDevicesCount}টি ডিভাইস` : `${registeredDevicesCount} device(s)`)
-                  : (language === 'bn' ? 'কোনো ডিভাইস নেই' : '0 devices')}
-              </span>
-            </div>
-            {devicePushStatus?.deviceId && (
-              <div className="text-[10px] text-slate-400 font-mono truncate">
-                Device: {devicePushStatus.deviceId}
-              </div>
-            )}
-          </div>
+          {notificationPermission === 'denied' && (
+            <p className="text-[11px] text-rose-700 bg-rose-50 p-2 rounded-lg border border-rose-200">
+              {language === 'bn'
+                ? 'ব্রাউজার সেটিংসে নোটিফিকেশন বন্ধ রয়েছে। শিডিউল সতর্কবার্তা পেতে ক্রোম বা ব্রাউজারের সাইট সেটিংস থেকে নোটিফিকেশন অ্যালাও করুন।'
+                : 'Notifications are blocked in your browser. To receive meeting alerts, please allow notifications for this site in your browser site settings.'}
+            </p>
+          )}
 
           {testPushResult && (
-            <div className="p-2 bg-white rounded-lg border border-teal-300 text-xs text-teal-900 font-medium">
+            <div className="p-2.5 bg-white rounded-lg border border-teal-300 text-xs text-teal-950 font-medium shadow-2xs">
               {testPushResult}
             </div>
           )}
@@ -825,39 +1049,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* 4. App Installation & Deployment */}
-      {onOpenInstallModal && (
-        <button
-          onClick={onOpenInstallModal}
-          className="w-full bg-gradient-to-r from-teal-900 to-[#004D40] text-white p-4 rounded-2xl shadow-xs flex items-center justify-between text-left transition hover:opacity-95 cursor-pointer"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur-xs text-amber-300 flex items-center justify-center border border-white/20">
-              <Smartphone className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h4 className="text-xs font-bold text-white">
-                  {language === 'bn'
-                    ? 'অ্যাপ ইনস্টলেশন (Android APK / iPhone / Desktop)'
-                    : 'Install App (Android APK, iPhone, Desktop & GitHub)'}
-                </h4>
-                <span className="text-[10px] bg-amber-400 text-slate-900 font-bold px-1.5 py-0.2 rounded-full">
-                  PWA
-                </span>
-              </div>
-              <p className="text-[11px] text-teal-100 mt-0.5">
-                {language === 'bn'
-                  ? 'ফোনে বা কম্পিউটারে স্বতন্ত্র অ্যাপ্লিকেশন হিসেবে ব্যবহারের পূর্ণ নির্দেশিকা'
-                  : 'Step-by-step guide to install natively or deploy to GitHub'}
-              </p>
-            </div>
-          </div>
-          <ExternalLink className="w-4 h-4 text-teal-200" />
-        </button>
-      )}
-
-      {/* 5. About App & Reset */}
+      {/* 4. About App & Reset */}
       <div className="space-y-2">
         <button
           onClick={onOpenAbout}

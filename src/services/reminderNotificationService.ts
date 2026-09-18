@@ -82,22 +82,56 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 
 /**
  * Shows browser notification if permitted
+ * Uses ServiceWorkerRegistration.showNotification first (safe for Android/Mobile/PWA),
+ * falling back to window.Notification constructor on desktop.
  */
 export function showNotification(title: string, options?: NotificationOptions): boolean {
   if (getNotificationPermission() !== 'granted') return false;
 
   try {
     playChime();
-    new Notification(title, {
+
+    const fullOptions: NotificationOptions = {
       icon: '/pwa-192x192.png',
       badge: '/icon.svg',
       ...options,
-    });
-    return true;
+    };
+
+    // 1. Try ServiceWorker showNotification first (Standard for Android Chrome, PWA & modern browsers)
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          if (reg && 'showNotification' in reg) {
+            reg.showNotification(title, fullOptions).catch((swErr) => {
+              console.warn('[Notification] ServiceWorker showNotification promise error:', swErr);
+            });
+          }
+        })
+        .catch(() => {
+          // If SW ready rejects, attempt desktop fallback
+          tryDirectNotification(title, fullOptions);
+        });
+      return true;
+    }
+
+    // 2. Direct desktop Notification fallback
+    return tryDirectNotification(title, fullOptions);
   } catch (err) {
     console.warn('[Notification] Failed to show notification:', err);
     return false;
   }
+}
+
+function tryDirectNotification(title: string, options: NotificationOptions): boolean {
+  try {
+    if (typeof Notification !== 'undefined') {
+      new Notification(title, options);
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Notification] Direct Notification constructor unsupported/failed:', err);
+  }
+  return false;
 }
 
 /**

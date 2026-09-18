@@ -10,7 +10,8 @@ import {
   TelegramMessageEntity,
 } from '../domain/models';
 import { INITIAL_EVENTS, INITIAL_TELEGRAM_MESSAGES, TODAY_STR } from './mockEvents';
-import { db } from '../services/firebaseClient';
+import { auth, db } from '../services/firebaseClient';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
   collection,
   doc,
@@ -18,6 +19,7 @@ import {
   deleteDoc,
   onSnapshot,
 } from 'firebase/firestore';
+import { apiFetch } from '../config/api';
 
 type Listener = () => void;
 
@@ -48,6 +50,8 @@ class EventRepository {
   private telegramMessages: TelegramMessageEntity[] = IS_DEMO_ENABLED ? [...INITIAL_TELEGRAM_MESSAGES] : [];
   private listeners: Set<Listener> = new Set();
   private isFirestoreConnected: boolean = false;
+  private unsubscribeEvents: (() => void) | null = null;
+  private unsubscribeTelegram: (() => void) | null = null;
 
   constructor() {
     // 1. Load cached events from localStorage for instant offline startup if exists
@@ -75,16 +79,36 @@ class EventRepository {
   }
 
   private initFirestoreSync() {
+    // Immediate fallback fetch from trusted backend API
+    this.fetchServerUpdates();
+
+    // Listen to Firebase Auth state
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        this.bindFirestoreListeners();
+      } else {
+        this.unbindFirestoreListeners();
+        this.isFirestoreConnected = false;
+        this.fetchServerUpdates();
+      }
+    });
+  }
+
+  private bindFirestoreListeners() {
+    this.unbindFirestoreListeners();
+
     try {
       const eventsCol = collection(db, 'events');
-      onSnapshot(
+      this.unsubscribeEvents = onSnapshot(
         eventsCol,
         (snapshot) => {
           this.isFirestoreConnected = true;
           if (!snapshot.empty) {
             const remoteEvents: EventEntity[] = [];
             snapshot.forEach((docSnap) => {
-              remoteEvents.push(docSnap.data() as EventEntity);
+              const data = docSnap.data() as EventEntity;
+              console.log('[Repository] Event subscription received document:', docSnap.id, data?.title?.slice(0, 25));
+              remoteEvents.push(data);
             });
             this.events = remoteEvents;
             this.persistLocalCache();
@@ -99,12 +123,14 @@ class EventRepository {
           }
         },
         (err) => {
+          this.isFirestoreConnected = false;
           console.warn('[Repository] Firestore events sync running in offline fallback mode:', err?.message);
+          this.fetchServerUpdates();
         }
       );
 
       const msgsCol = collection(db, 'telegramMessages');
-      onSnapshot(
+      this.unsubscribeTelegram = onSnapshot(
         msgsCol,
         (snapshot) => {
           if (!snapshot.empty) {
@@ -130,9 +156,17 @@ class EventRepository {
     } catch (err) {
       console.warn('[Repository] Firestore sync initialization error:', err);
     }
+  }
 
-    // Call server endpoints as immediate sync fallback
-    this.fetchServerUpdates();
+  private unbindFirestoreListeners() {
+    if (this.unsubscribeEvents) {
+      this.unsubscribeEvents();
+      this.unsubscribeEvents = null;
+    }
+    if (this.unsubscribeTelegram) {
+      this.unsubscribeTelegram();
+      this.unsubscribeTelegram = null;
+    }
   }
 
   /**
@@ -142,13 +176,23 @@ class EventRepository {
   public async fetchServerUpdates(): Promise<void> {
     try {
       const [eventsRes, msgsRes] = await Promise.all([
-        fetch('/api/events').then((r) => (r.ok ? r.json() : null)).catch(() => null),
-        fetch('/api/telegram/messages').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        apiFetch('/api/events').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        apiFetch('/api/telegram/messages').then((r) => (r.ok ? r.json() : null)).catch(() => null),
       ]);
 
       let hasChanged = false;
-      if (eventsRes?.events && Array.isArray(eventsRes.events) && eventsRes.events.length > 0) {
-        this.events = eventsRes.events;
+      if (eventsRes?.events && Array.isArray(eventsRes.events)) {
+        const serverEvents: EventEntity[] = eventsRes.events;
+        const mergedMap = new Map<string, EventEntity>();
+        // Canonical server events from Firestore
+        serverEvents.forEach((ev) => mergedMap.set(ev.id, ev));
+        // Preserve any recent local events
+        this.events.forEach((ev) => {
+          if (!mergedMap.has(ev.id)) {
+            mergedMap.set(ev.id, ev);
+          }
+        });
+        this.events = Array.from(mergedMap.values());
         hasChanged = true;
       }
       if (msgsRes?.messages && Array.isArray(msgsRes.messages) && msgsRes.messages.length > 0) {
@@ -262,57 +306,155 @@ class EventRepository {
     return this.events.find((e) => e.id === id);
   }
 
-  public addEvent(newEvent: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>): EventEntity {
+  public async addEvent(newEvent: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>): Promise<EventEntity> {
+    const eventId = (newEvent as any).id || `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const created: EventEntity = {
       ...newEvent,
-      id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: eventId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      createdBy: newEvent.createdBy || auth.currentUser?.email || 'staff',
+      visibility: newEvent.visibility || 'institutional',
+      source: newEvent.source || 'Manual',
+      reviewStatus: newEvent.reviewStatus || 'auto_approved',
+      syncStatus: newEvent.syncStatus || 'synced',
     };
-    this.events.unshift(created);
-    this.notify();
 
-    // Async write to Firestore
-    try {
-      const docRef = doc(db, 'events', created.id);
-      setDoc(docRef, sanitizeForFirestore(created)).catch((err) => {
-        console.warn('[Repository] Firestore addEvent deferred to local cache:', err?.message);
-      });
-    } catch (e) {
-      console.warn('[Repository] Firestore sync addEvent:', e);
+    console.log('[Repository] Quick Add confirmed → Firestore write attempted:', {
+      id: created.id,
+      title: created.title,
+      date: created.eventDate,
+      time: created.startTime,
+      source: created.source,
+    });
+
+    let firestoreWritten = false;
+    let writeError: any = null;
+
+    // 1. Direct Firestore write via Client SDK (if user is authenticated)
+    if (auth.currentUser) {
+      try {
+        const docRef = doc(db, 'events', created.id);
+        await setDoc(docRef, sanitizeForFirestore(created));
+        firestoreWritten = true;
+        console.log('[Repository] Direct Firestore write succeeded for doc ID:', created.id);
+      } catch (err: any) {
+        console.warn('[Repository] Direct Firestore client setDoc encountered issue, attempting server API proxy:', err?.message);
+        writeError = err;
+      }
     }
+
+    // 2. Canonical Server API write (authoritative write via Firebase Admin SDK)
+    try {
+      let idToken: string | null = null;
+      if (auth.currentUser) {
+        try {
+          idToken = await auth.currentUser.getIdToken();
+        } catch {}
+      }
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (idToken) {
+        headers['Authorization'] = `Bearer ${idToken}`;
+      }
+
+      const res = await apiFetch('/api/events', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ event: created }),
+      });
+
+      if (res.ok) {
+        firestoreWritten = true;
+        const body = await res.json();
+        console.log('[Repository] Server API Firestore write succeeded for doc ID:', body?.event?.id || created.id);
+      } else {
+        const errText = await res.text();
+        console.warn('[Repository] Server API /api/events write response not ok:', res.status, errText);
+        if (!firestoreWritten) {
+          writeError = new Error(`Server write failed (${res.status}): ${errText}`);
+        }
+      }
+    } catch (apiErr: any) {
+      console.warn('[Repository] Server API /api/events write network error:', apiErr?.message);
+      if (!firestoreWritten) {
+        writeError = apiErr;
+      }
+    }
+
+    // If both failed and we couldn't write to Firestore, throw real error so UI displays real error and doesn't show false success
+    if (!firestoreWritten && writeError) {
+      console.error('[Repository] All Firestore persistence channels failed for doc ID:', created.id, writeError);
+      throw new Error(`Firestore এ সংরক্ষণ ব্যর্থ হয়েছে: ${writeError?.message || 'নেটওয়ার্ক সংযোগ পরীক্ষা করুন'}`);
+    }
+
+    // Update in-memory state and local cache
+    const existingIdx = this.events.findIndex((e) => e.id === created.id);
+    if (existingIdx >= 0) {
+      this.events[existingIdx] = created;
+    } else {
+      this.events.unshift(created);
+    }
+    this.persistLocalCache();
+    this.notify();
 
     return created;
   }
 
-  public updateEvent(updated: EventEntity): void {
-    const stamped = { ...updated, updatedAt: new Date().toISOString() };
+  public async updateEvent(updated: EventEntity): Promise<void> {
+    const stamped: EventEntity = { ...updated, updatedAt: new Date().toISOString() };
     this.events = this.events.map((e) => (e.id === stamped.id ? stamped : e));
+    this.persistLocalCache();
     this.notify();
 
-    // Async write to Firestore
+    // 1. Direct Firestore write if authenticated
+    if (auth.currentUser) {
+      try {
+        const docRef = doc(db, 'events', stamped.id);
+        await setDoc(docRef, sanitizeForFirestore(stamped), { merge: true });
+      } catch (err: any) {
+        console.warn('[Repository] Direct Firestore updateDoc error, falling back to server API:', err?.message);
+      }
+    }
+
+    // 2. Canonical Server API write
     try {
-      const docRef = doc(db, 'events', stamped.id);
-      setDoc(docRef, sanitizeForFirestore(stamped), { merge: true }).catch((err) => {
-        console.warn('[Repository] Firestore updateEvent deferred to local cache:', err?.message);
+      let idToken: string | null = null;
+      if (auth.currentUser) {
+        try {
+          idToken = await auth.currentUser.getIdToken();
+        } catch {}
+      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+      await apiFetch(`/api/events/${stamped.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ event: stamped }),
       });
     } catch (e) {
-      console.warn('[Repository] Firestore sync updateEvent:', e);
+      console.warn('[Repository] Server API update event network error:', e);
     }
   }
 
-  public deleteEvent(id: string): void {
+  public async deleteEvent(id: string): Promise<void> {
     this.events = this.events.filter((e) => e.id !== id);
+    this.persistLocalCache();
     this.notify();
 
-    // Async delete from Firestore
+    if (auth.currentUser) {
+      try {
+        const docRef = doc(db, 'events', id);
+        await deleteDoc(docRef);
+      } catch (err: any) {
+        console.warn('[Repository] Direct Firestore deleteDoc error:', err?.message);
+      }
+    }
+
     try {
-      const docRef = doc(db, 'events', id);
-      deleteDoc(docRef).catch((err) => {
-        console.warn('[Repository] Firestore deleteEvent deferred to local cache:', err?.message);
-      });
+      await apiFetch(`/api/events/${id}`, { method: 'DELETE' });
     } catch (e) {
-      console.warn('[Repository] Firestore sync deleteEvent:', e);
+      console.warn('[Repository] Server API delete event error:', e);
     }
   }
 

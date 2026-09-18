@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { EventEntity, Language, Category, NavigationTab } from '../domain/models';
 import {
   formatBengaliDate,
@@ -13,16 +13,11 @@ import {
   ClipboardCheck,
   CalendarRange,
   AlertCircle,
-  Sparkles,
   ArrowRight,
   Filter,
   FolderArchive,
   CloudUpload,
   Bot,
-  Bell,
-  BellOff,
-  Radio,
-  WifiOff,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -52,36 +47,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   selectedCategory,
   onSelectCategory,
 }) => {
-  const [integrationStatus, setIntegrationStatus] = useState<any>(null);
-  const [pushPermission, setPushPermission] = useState<NotificationPermission>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'default'
-  );
-
-  useEffect(() => {
-    let isMounted = true;
-    fetch('/api/integrations/status')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (isMounted && data) {
-          setIntegrationStatus(data);
-        }
-      })
-      .catch(() => {
-        // offline or server starting
-      });
-
-    if (typeof Notification !== 'undefined') {
-      setPushPermission(Notification.permission);
-    }
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  const isTelegramActive = Boolean(integrationStatus?.telegram?.configured);
-  const isGeminiActive = Boolean(integrationStatus?.gemini?.configured);
-  const isAllAiSyncActive = isTelegramActive && isGeminiActive;
   const dhakaNow = getDhakaNow();
   const currentHour = dhakaNow.getHours();
 
@@ -141,72 +106,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   'আজ কোনো নির্ধারিত কর্মসূচি নেই'
                 )
               ) : (
-                `You have ${todayEvents.length} scheduled event${todayEvents.length === 1 ? '' : 's'} today`
+                  `You have ${todayEvents.length} scheduled event${todayEvents.length === 1 ? '' : 's'} today`
               )}
             </p>
-          </div>
-
-          {/* Real Live Integration Status Micro-Badges */}
-          <div className="mt-3.5 pt-3 border-t border-teal-600/40 flex flex-wrap items-center gap-2 text-[11px]">
-            {/* Push Notifications Badge */}
-            <div
-              onClick={() => onNavigateToTab('settings')}
-              className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-black/20 hover:bg-black/30 border border-white/10 transition"
-              title="Click to view notification settings"
-            >
-              {pushPermission === 'granted' ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="text-emerald-200 font-medium">
-                    {language === 'bn' ? 'পুশ সক্রিয়' : 'Push Active'}
-                  </span>
-                </>
-              ) : pushPermission === 'denied' ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
-                  <span className="text-rose-200 font-medium">
-                    {language === 'bn' ? 'পুশ বন্ধ' : 'Push Blocked'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  <span className="text-amber-200 font-medium">
-                    {language === 'bn' ? 'পুশ নিষ্ক্রিয়' : 'Push Inactive'}
-                  </span>
-                </>
-              )}
-            </div>
-
-            {/* Telegram & Gemini Status Badge */}
-            <div
-              onClick={() => onNavigateToTab('settings')}
-              className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-black/20 hover:bg-black/30 border border-white/10 transition"
-              title="Click to view integrations"
-            >
-              {isAllAiSyncActive ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                  <span className="text-emerald-200 font-medium">
-                    {language === 'bn' ? 'এআই ও টেলিগ্রাম সক্রিয়' : 'Telegram & AI Active'}
-                  </span>
-                </>
-              ) : isTelegramActive ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  <span className="text-amber-200 font-medium">
-                    {language === 'bn' ? 'জেমিনি কী বাকি' : 'Gemini Key Pending'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-teal-300/60"></span>
-                  <span className="text-teal-200 font-medium">
-                    {language === 'bn' ? 'টেলিগ্রাম সেটআপ বাকি' : 'Telegram Pending'}
-                  </span>
-                </>
-              )}
-            </div>
           </div>
         </div>
       </div>
@@ -464,49 +366,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           onToggleComplete={onToggleComplete}
           language={language}
         />
-      </div>
-
-      {/* Telegram Notice & AI Quick Insight Card */}
-      <div className={`rounded-2xl p-4 border shadow-xs ${
-        isAllAiSyncActive
-          ? 'bg-gradient-to-r from-teal-50 to-emerald-50/80 border-teal-200/90'
-          : 'bg-slate-50 border-slate-200'
-      }`}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
-              isAllAiSyncActive ? 'bg-teal-600 text-white' : 'bg-slate-300 text-slate-700'
-            }`}>
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <div>
-              <h4 className="text-xs font-bold text-slate-900">
-                {isAllAiSyncActive
-                  ? (language === 'bn' ? 'টেলিগ্রাম ও এআই সিঙ্ক সক্রিয়' : 'Telegram & AI Sync Active')
-                  : isTelegramActive
-                  ? (language === 'bn' ? 'জেমিনি এআই এপিআই কী অনুপস্থিত' : 'Gemini AI API Key Required')
-                  : (language === 'bn' ? 'টেলিগ্রাম ইন্টিগ্রেশন বাকি' : 'Telegram Webhook Pending')}
-              </h4>
-              <p className="text-[11px] text-slate-600">
-                {isAllAiSyncActive
-                  ? (language === 'bn'
-                      ? 'অফিসিয়াল আদেশ ও বাংলা নোটিশ স্বয়ংক্রিয়ভাবে রূপান্তর হচ্ছে'
-                      : 'Official orders and Bangla notices are auto-converting')
-                  : (language === 'bn'
-                      ? 'অফলাইন ও লোকাল শিডিউল সচল রয়েছে। অনলাইন সিঙ্কের জন্য সেটিংস দেখুন।'
-                      : 'Running in offline mode. Configure bot & AI in Settings for live sync.')}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => onNavigateToTab(isAllAiSyncActive ? 'inbox' : 'settings')}
-            className="text-xs font-semibold text-[#006A60] bg-white px-2.5 py-1 rounded-lg border border-slate-300 shadow-xs hover:bg-slate-50 transition"
-          >
-            {isAllAiSyncActive
-              ? (language === 'bn' ? 'ইনবক্স দেখুন' : 'View Inbox')
-              : (language === 'bn' ? 'সেটিংস' : 'Settings')}
-          </button>
-        </div>
       </div>
     </div>
   );

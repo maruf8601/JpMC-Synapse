@@ -18,12 +18,14 @@ import {
   FileEdit,
   ArrowRight,
   AlertCircle,
+  Loader2,
 } from 'lucide-react';
+import { apiFetch } from '../config/api';
 
 interface QuickAddModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAddEvent: (event: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onAddEvent: (event: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>) => Promise<any> | void;
   language: Language;
 }
 
@@ -37,6 +39,8 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   const [nlInput, setNlInput] = useState('');
   const [isAiParsing, setIsAiParsing] = useState(false);
   const [parsedPreview, setParsedPreview] = useState<Partial<EventEntity> | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Manual Form State
   const now = getDhakaNow();
@@ -94,7 +98,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     setExtractionError(null);
 
     try {
-      const res = await fetch('/api/extract-events', {
+      const res = await apiFetch('/api/extract-events', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -176,8 +180,8 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     }
   };
 
-  const handleSaveParsedPreview = () => {
-    if (!parsedPreview) return;
+  const handleSaveParsedPreview = async () => {
+    if (!parsedPreview || isSaving) return;
 
     const hasValidDate = Boolean(parsedPreview.eventDate);
     const hasValidStartTime = Boolean(parsedPreview.startTime);
@@ -211,7 +215,10 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
         ]
       : [];
 
-    onAddEvent({
+    setIsSaving(true);
+    setSaveError(null);
+
+    const payload = {
       title: parsedPreview.title || 'শিরোনাম নির্ধারণ প্রয়োজন',
       eventDate: parsedPreview.eventDate || null,
       startTime: parsedPreview.startTime || null,
@@ -220,15 +227,30 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
       category: parsedPreview.category || 'অন্যান্য',
       priority: parsedPreview.priority || 'normal',
       description: parsedPreview.description || '',
-      source: 'AI Extracted',
+      source: 'AI Extracted' as const,
       confidence,
       reviewStatus,
-      syncStatus: 'pending',
+      syncStatus: 'synced' as const,
       ambiguities: parsedPreview.ambiguities,
       reminders,
-    });
+    };
 
-    onClose();
+    console.log('[QuickAdd] Confirmed AI event saving:', payload);
+    try {
+      await onAddEvent(payload);
+      console.log('[QuickAdd] Firestore write succeeded for AI event');
+      onClose();
+    } catch (err: any) {
+      console.error('[QuickAdd] Firestore write failed for AI event:', err);
+      setSaveError(
+        err?.message ||
+          (language === 'bn'
+            ? 'ডাটাবেজে সংরক্ষণ ব্যর্থ হয়েছে। নেটওয়ার্ক ও অনুমতি পরীক্ষা করুন।'
+            : 'Failed to persist event to Firestore database. Please retry.')
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleTransferPreviewToManual = () => {
@@ -243,11 +265,14 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     setActiveMode('manual');
   };
 
-  const handleManualSubmit = (e: React.FormEvent) => {
+  const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || isSaving) return;
 
-    onAddEvent({
+    setIsSaving(true);
+    setSaveError(null);
+
+    const payload = {
       title: title.trim(),
       eventDate: eventDate || null,
       startTime: isAllDay ? null : (startTime && startTime.trim() ? startTime.trim() : null),
@@ -259,15 +284,15 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
       committee: committee.trim() ? committee.trim() : undefined,
       participants: participants.trim() ? participants.trim() : undefined,
       isAllDay,
-      source: 'Manual',
+      source: 'Manual' as const,
       confidence: null,
-      reviewStatus: 'auto_approved',
-      syncStatus: 'synced',
+      reviewStatus: 'auto_approved' as const,
+      syncStatus: 'synced' as const,
       reminders: [
         {
           id: `rem-${Date.now()}`,
           eventId: '',
-          reminderType: 'notification',
+          reminderType: 'notification' as const,
           minutesBefore: 120,
           scheduledAt: '',
           enabled: true,
@@ -275,15 +300,30 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
         {
           id: `rem-${Date.now() + 1}`,
           eventId: '',
-          reminderType: 'notification',
+          reminderType: 'notification' as const,
           minutesBefore: 30,
           scheduledAt: '',
           enabled: true,
         },
       ],
-    });
+    };
 
-    onClose();
+    console.log('[QuickAdd] Confirmed manual event saving:', payload);
+    try {
+      await onAddEvent(payload);
+      console.log('[QuickAdd] Firestore write succeeded for manual event');
+      onClose();
+    } catch (err: any) {
+      console.error('[QuickAdd] Firestore write failed for manual event:', err);
+      setSaveError(
+        err?.message ||
+          (language === 'bn'
+            ? 'ডাটাবেজে সংরক্ষণ ব্যর্থ হয়েছে। নেটওয়ার্ক ও অনুমতি পরীক্ষা করুন।'
+            : 'Failed to persist event to Firestore database. Please retry.')
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -344,6 +384,20 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
 
         {/* Content Body */}
         <div className="p-5 overflow-y-auto space-y-4">
+          {saveError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-start gap-2 animate-in fade-in">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div className="flex-1 font-medium">{saveError}</div>
+              <button
+                type="button"
+                onClick={() => setSaveError(null)}
+                className="text-rose-500 hover:text-rose-800 text-xs ml-1"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {activeMode === 'ai' ? (
             /* AI Natural Language Add Screen */
             <div className="space-y-3.5">
@@ -556,27 +610,38 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                   <div className="flex flex-col sm:flex-row gap-2 pt-1">
                     <button
                       type="button"
+                      disabled={isSaving}
                       onClick={handleTransferPreviewToManual}
-                      className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition flex items-center justify-center gap-1.5"
+                      className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
                       <Sparkles className="w-3.5 h-3.5 text-teal-600 shrink-0" />
                       <span>{language === 'bn' ? 'নিজে তথ্য পূরণ / সম্পাদন' : 'Edit in Form'}</span>
                     </button>
                     <button
                       type="button"
+                      disabled={isSaving}
                       onClick={handleSaveParsedPreview}
-                      className="flex-1 py-2 px-3 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1.5"
+                      className="flex-1 py-2 px-3 rounded-xl bg-[#006A60] hover:bg-teal-700 disabled:bg-slate-400 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
                     >
-                      <span>
-                        {parsedPreview.reviewStatus === 'needs_review'
-                          ? language === 'bn'
-                            ? 'রিভিউ সেন্টারে সংরক্ষণ'
-                            : 'Save for Review'
-                          : language === 'bn'
-                          ? 'কর্মসূচি সংরক্ষণ করুন'
-                          : 'Save Schedule'}
-                      </span>
-                      <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                      {isSaving ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                          <span>{language === 'bn' ? 'সংরক্ষণ হচ্ছে...' : 'Saving to Database...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>
+                            {parsedPreview.reviewStatus === 'needs_review'
+                              ? language === 'bn'
+                                ? 'রিভিউ সেন্টারে সংরক্ষণ'
+                                : 'Save for Review'
+                              : language === 'bn'
+                              ? 'কর্মসূচি সংরক্ষণ করুন'
+                              : 'Save Schedule'}
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -734,9 +799,17 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full py-2.5 px-4 rounded-xl bg-[#006A60] hover:bg-teal-700 text-white font-bold text-xs shadow-md transition"
+                  disabled={isSaving}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#006A60] hover:bg-teal-700 disabled:bg-slate-400 text-white font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                 >
-                  {language === 'bn' ? 'কর্মসূচি সংরক্ষণ করুন' : 'Save Event'}
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span>{language === 'bn' ? 'ডাটাবেজে সংরক্ষণ হচ্ছে...' : 'Saving to Database...'}</span>
+                    </>
+                  ) : (
+                    <span>{language === 'bn' ? 'কর্মসূচি সংরক্ষণ করুন' : 'Save Event'}</span>
+                  )}
                 </button>
               </div>
             </form>

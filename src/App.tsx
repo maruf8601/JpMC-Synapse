@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { eventRepository } from './data/eventRepository';
 import { EventEntity, NavigationTab, Language, Category } from './domain/models';
-import { StatusBar } from './components/StatusBar';
 import { TopAppBar } from './components/TopAppBar';
 import { BottomNavBar } from './components/BottomNavBar';
 import { DashboardView } from './components/DashboardView';
@@ -116,12 +115,12 @@ export default function App() {
     eventRepository.rejectEvent(id);
   };
 
-  const handleAddEvent = (eventData: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>) => {
-    eventRepository.addEvent(eventData);
+  const handleAddEvent = async (eventData: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>) => {
+    return await eventRepository.addEvent(eventData);
   };
 
-  const handleDeleteEvent = (id: string) => {
-    eventRepository.deleteEvent(id);
+  const handleDeleteEvent = async (id: string) => {
+    await eventRepository.deleteEvent(id);
     setSelectedEvent(null);
   };
 
@@ -133,10 +132,7 @@ export default function App() {
 
   return (
     <DeviceFrame language={language}>
-      {/* 1. Android Status Bar with Asia/Dhaka time */}
-      <StatusBar language={language} />
-
-      {/* 2. Top App Bar with JpMC seal, search, notification bell & language toggle */}
+      {/* 1. Top App Bar with JpMC seal, search & notification bell */}
       <TopAppBar
         language={language}
         onLanguageChange={setLanguage}
@@ -144,7 +140,6 @@ export default function App() {
         onOpenReview={() => setIsReviewOpenFromHeader(true)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}
       />
 
       {/* 3. Main Body Scroll Area */}

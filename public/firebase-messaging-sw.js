@@ -5,52 +5,56 @@
  */
 
 /* eslint-disable no-undef */
-importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
+try {
+  importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
 
-// Initialize Firebase inside the service worker
-firebase.initializeApp({
-  projectId: 'sapient-pen-336609',
-  appId: '1:103277329126:web:64cb4ba0cfd47a134bd927',
-  apiKey: 'AIzaSyBaaFz7VAL2WBx0Sp47trHf_4RkEGkvFa0',
-  authDomain: 'sapient-pen-336609.firebaseapp.com',
-  storageBucket: 'sapient-pen-336609.firebasestorage.app',
-  messagingSenderId: '103277329126',
-});
+  // Initialize Firebase inside the service worker
+  firebase.initializeApp({
+    projectId: 'sapient-pen-336609',
+    appId: '1:103277329126:web:64cb4ba0cfd47a134bd927',
+    apiKey: 'AIzaSyBaaFz7VAL2WBx0Sp47trHf_4RkEGkvFa0',
+    authDomain: 'sapient-pen-336609.firebaseapp.com',
+    storageBucket: 'sapient-pen-336609.firebasestorage.app',
+    messagingSenderId: '103277329126',
+  });
 
-const messaging = firebase.messaging();
+  const messaging = firebase.messaging();
 
-/**
- * Handle background FCM notifications
- */
-messaging.onBackgroundMessage((payload) => {
-  console.log('[firebase-messaging-sw.js] Background message received:', payload);
+  /**
+   * Handle background FCM notifications
+   */
+  messaging.onBackgroundMessage((payload) => {
+    console.log('[firebase-messaging-sw.js] Background message received:', payload);
 
-  const notificationTitle =
-    payload.notification?.title || payload.data?.title || 'JpMC Synapse বিজ্ঞপ্তি';
+    const notificationTitle =
+      payload.notification?.title || payload.data?.title || 'JpMC Synapse বিজ্ঞপ্তি';
 
-  const notificationOptions = {
-    body:
-      payload.notification?.body ||
-      payload.data?.body ||
-      'জামালপুর মেডিকেল কলেজ অফিশিয়াল সূচি রিমাইন্ডার।',
-    icon: '/pwa-192x192.png',
-    badge: '/icon.svg',
-    tag: payload.data?.deliveryId || payload.data?.eventId || 'jpmc-synapse-alert',
-    renotify: true,
-    requireInteraction: true,
-    data: {
-      eventId: payload.data?.eventId,
-      eventDate: payload.data?.eventDate,
-      startTime: payload.data?.startTime,
-      venue: payload.data?.venue,
-      reminderType: payload.data?.reminderType,
-      url: payload.data?.url || (payload.data?.eventId ? `/?eventId=${payload.data.eventId}` : '/'),
-    },
-  };
+    const notificationOptions = {
+      body:
+        payload.notification?.body ||
+        payload.data?.body ||
+        'জামালপুর মেডিকেল কলেজ অফিশিয়াল সূচি রিমাইন্ডার।',
+      icon: '/pwa-192x192.png',
+      badge: '/icon.svg',
+      tag: payload.data?.deliveryId || payload.data?.eventId || 'jpmc-synapse-alert',
+      renotify: true,
+      requireInteraction: true,
+      data: {
+        eventId: payload.data?.eventId,
+        eventDate: payload.data?.eventDate,
+        startTime: payload.data?.startTime,
+        venue: payload.data?.venue,
+        reminderType: payload.data?.reminderType,
+        url: payload.data?.url || (payload.data?.eventId ? `/?eventId=${payload.data.eventId}` : '/'),
+      },
+    };
 
-  return self.registration.showNotification(notificationTitle, notificationOptions);
-});
+    return self.registration.showNotification(notificationTitle, notificationOptions);
+  });
+} catch (fcmInitErr) {
+  console.warn('[firebase-messaging-sw.js] Firebase scripts init notice (WebPush fallback active):', fcmInitErr);
+}
 
 /**
  * Fallback Push event listener in case of raw WebPush format

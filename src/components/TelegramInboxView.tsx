@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { TelegramMessageEntity, Language, EventEntity, ReviewStatus } from '../domain/models';
 import { toBengaliNumber } from '../domain/constants';
 import { TelegramTextToMeeting } from './TelegramTextToMeeting';
-import { parseNoticeWithGemini } from '../services/telegramMeetingParser';
 import { eventRepository } from '../data/eventRepository';
+import { fetchTelegramStatus } from '../config/api';
 import {
   MessageSquare,
   FileText,
@@ -13,9 +13,10 @@ import {
   AlertTriangle,
   XCircle,
   CopyCheck,
-  Send,
-  PenTool,
   Loader2,
+  DownloadCloud,
+  FileQuestion,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 interface TelegramInboxViewProps {
@@ -34,11 +35,11 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
   const [activeSegment, setActiveSegment] = useState<'text_to_meeting' | 'inbox'>('text_to_meeting');
   const [reprocessingId, setReprocessingId] = useState<number | null>(null);
   const [reprocessSuccess, setReprocessSuccess] = useState<number | null>(null);
+  const [reprocessError, setReprocessError] = useState<number | null>(null);
   const [botConfigured, setBotConfigured] = useState<boolean>(false);
 
   useEffect(() => {
-    fetch('/api/telegram/status')
-      .then((res) => (res.ok ? res.json() : null))
+    fetchTelegramStatus()
       .then((data) => {
         if (data?.configured) {
           setBotConfigured(true);
@@ -49,65 +50,36 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
 
   const handleReprocess = async (msg: TelegramMessageEntity) => {
     setReprocessingId(msg.id);
+    setReprocessError(null);
     try {
-      const res = await parseNoticeWithGemini(msg.rawText);
-      if (res.events && res.events.length > 0) {
-        const item = res.events[0];
-        const hasDate = Boolean(item.eventDate);
-        const hasStartTime = Boolean(item.startTime);
-        const hasValidConfidence =
-          typeof item.confidence === 'number' && !isNaN(item.confidence) && item.confidence >= 0 && item.confidence <= 1;
+      const res = await fetch('/api/telegram/reprocess', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          telegramFileId: msg.telegramFileId,
+        }),
+      });
 
-        const ambiguities: string[] = Array.isArray(item.ambiguities) ? [...item.ambiguities] : [];
-
-        let confidence: number | null = null;
-        if (hasValidConfidence) {
-          confidence = item.confidence;
-        } else {
-          confidence = 0;
-          ambiguities.push('AI confidence score পাওয়া যায়নি।');
-        }
-
-        if (!hasDate) ambiguities.push('তারিখ অনুপস্থিত (Date missing)');
-        if (!hasStartTime) ambiguities.push('সময় অনুপস্থিত (Time missing)');
-        if (!item.venue) ambiguities.push('ভেন্যু অনুপস্থিত (Venue missing)');
-
-        const isMissingRequired = !hasDate || !hasStartTime;
-        const isLowConfidence = confidence < 0.90;
-        const reviewStatus: ReviewStatus = isMissingRequired || isLowConfidence || ambiguities.length > 0
-          ? 'needs_review'
-          : 'auto_approved';
-
-        const rawTitle = typeof item.title === 'string' ? item.title.trim() : '';
-        const hasMeaningfulTitle = rawTitle.length > 0 && !/^[\s-_.,]*$/.test(rawTitle);
-
-        const created = eventRepository.addEvent({
-          title: hasMeaningfulTitle ? rawTitle : 'শিরোনাম নির্ধারণ প্রয়োজন',
-          description: item.description || msg.rawText,
-          eventDate: item.eventDate || null,
-          startTime: item.startTime || null,
-          endTime: item.endTime || null,
-          venue: item.venue || null,
-          category: item.category || 'অন্যান্য',
-          priority: item.priority || 'normal',
-          reviewStatus,
-          syncStatus: 'pending',
-          confidence,
-          source: 'Telegram',
-          originalText: msg.rawText,
-          sender: msg.senderName,
-          ambiguities,
-          isCompleted: false,
-        });
-
-        if (onSelectEvent) {
-          onSelectEvent(created);
-        }
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to reprocess message');
       }
+
+      // Sync fresh records across entire app
+      await eventRepository.fetchServerUpdates();
+
+      if (data.events && data.events.length > 0 && onSelectEvent) {
+        onSelectEvent(data.events[0]);
+      }
+
       setReprocessSuccess(msg.id);
       setTimeout(() => setReprocessSuccess(null), 3500);
     } catch (err) {
       console.warn('Reprocess error:', err);
+      setReprocessError(msg.id);
+      setTimeout(() => setReprocessError(null), 4000);
     } finally {
       setReprocessingId(null);
     }
@@ -116,6 +88,7 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
   const getStatusBadge = (status: TelegramMessageEntity['status']) => {
     switch (status) {
       case 'Schedule Created':
+      case 'Processed':
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
@@ -123,10 +96,19 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
           </span>
         );
       case 'Needs Review':
+      case 'Review Required':
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
             <AlertTriangle className="w-3 h-3 text-amber-600" />
             <span>{language === 'bn' ? 'যাচাই প্রয়োজন' : 'Needs Review'}</span>
+          </span>
+        );
+      case 'Processing':
+      case 'Received':
+        return (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-800 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-full">
+            <Loader2 className="w-3 h-3 text-sky-600 animate-spin" />
+            <span>{language === 'bn' ? 'বিশ্লেষণ চলছে...' : 'Processing...'}</span>
           </span>
         );
       case 'Not a Schedule':
@@ -134,6 +116,27 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
             <XCircle className="w-3 h-3 text-slate-400" />
             <span>{language === 'bn' ? 'সূচি সংশ্লিষ্ট নয়' : 'Not a Schedule'}</span>
+          </span>
+        );
+      case 'Download Failed':
+        return (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
+            <DownloadCloud className="w-3 h-3 text-rose-600" />
+            <span>{language === 'bn' ? 'ডকুমেন্ট ডাউনলোড ব্যর্থ' : 'Download Failed'}</span>
+          </span>
+        );
+      case 'Gemini Processing Failed':
+        return (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
+            <AlertTriangle className="w-3 h-3 text-rose-600" />
+            <span>{language === 'bn' ? 'এআই প্রসেসিং ব্যর্থ' : 'Gemini Failed'}</span>
+          </span>
+        );
+      case 'Unsupported Document':
+        return (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+            <FileQuestion className="w-3 h-3 text-amber-600" />
+            <span>{language === 'bn' ? 'অসমর্থিত ডকুমেন্ট' : 'Unsupported Doc'}</span>
           </span>
         );
       case 'Duplicate':
@@ -223,6 +226,7 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
           {messages.map((msg) => {
             const isReprocessing = reprocessingId === msg.id;
             const isSuccess = reprocessSuccess === msg.id;
+            const isFailed = reprocessError === msg.id;
 
             return (
               <div
@@ -230,12 +234,14 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
                 id={`telegram-msg-${msg.id}`}
                 className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-3"
               >
-                {/* Meta header */}
+                {/* Meta header: Canonical identity is TelegramBot with Telegram source */}
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <h4 className="text-xs font-bold text-slate-800">{msg.senderName}</h4>
+                    <h4 className="text-xs font-bold text-slate-800">TelegramBot</h4>
                     <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
-                      <span>{msg.senderRole}</span>
+                      <span className="font-semibold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[10px]">
+                        Telegram
+                      </span>
                       <span>•</span>
                       <span>{msg.timestamp}</span>
                     </div>
@@ -244,15 +250,56 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
                 </div>
 
                 {/* Message text */}
-                <div className="bg-slate-50 rounded-xl p-3 border border-slate-200/80 text-xs text-slate-800 leading-relaxed font-sans">
-                  "{msg.rawText}"
-                </div>
+                {msg.rawText && (
+                  <div className="bg-slate-50 rounded-xl p-3 border border-slate-200/80 text-xs text-slate-800 leading-relaxed font-sans">
+                    "{msg.rawText}"
+                  </div>
+                )}
 
-                {/* Document attachment pill if present */}
+                {/* Document or Image attachment pill if present */}
                 {msg.hasDocument && (
-                  <div className="flex items-center gap-2 text-xs bg-teal-50 text-[#006A60] px-3 py-1.5 rounded-lg border border-teal-200 w-fit">
-                    <FileText className="w-4 h-4 text-teal-600" />
-                    <span className="font-semibold">{msg.documentName}</span>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-xs bg-teal-50 text-[#006A60] px-3 py-2 rounded-xl border border-teal-200">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        {msg.documentType === 'image' ? (
+                          <ImageIcon className="w-4 h-4 text-teal-600 shrink-0" />
+                        ) : (
+                          <FileText className="w-4 h-4 text-teal-600 shrink-0" />
+                        )}
+                        <span className="font-semibold truncate">
+                          {msg.documentName ||
+                            (msg.documentType === 'image'
+                              ? language === 'bn'
+                                ? 'সংযুক্ত ছবি / ফটোগ্রাফ'
+                                : 'Attached Notice Photo'
+                              : language === 'bn'
+                              ? 'সংযুক্ত ডকুমেন্ট (PDF)'
+                              : 'Attached Document (PDF)')}
+                        </span>
+                      </div>
+                      {msg.fileSize && msg.fileSize > 0 && (
+                        <span className="text-[10px] text-teal-700/80 font-mono shrink-0">
+                          {(msg.fileSize / 1024).toFixed(0)} KB
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Optional Image Preview if message has image attachment */}
+                    {msg.documentType === 'image' && msg.chatId && msg.messageId && (
+                      <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-100 relative group">
+                        <img
+                          src={`/api/telegram/file-preview/${encodeURIComponent(msg.chatId)}/${msg.messageId}`}
+                          alt={msg.documentName || 'Notice preview'}
+                          className="w-full max-h-48 object-contain bg-slate-950/5"
+                          loading="lazy"
+                          onError={(e) => {
+                            // If preview fails to load or offline, collapse smoothly
+                            const parent = (e.target as HTMLElement).parentElement;
+                            if (parent) parent.style.display = 'none';
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -268,7 +315,7 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {msg.status === 'Needs Review' && (
+                    {(msg.status === 'Needs Review' || msg.status === 'Review Required') && (
                       <button
                         onClick={onOpenReview}
                         className="text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-lg transition cursor-pointer"
@@ -292,6 +339,10 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
                           ? language === 'bn'
                             ? 'সম্পন্ন!'
                             : 'Done!'
+                          : isFailed
+                          ? language === 'bn'
+                            ? 'ব্যর্থ হয়েছে'
+                            : 'Failed'
                           : language === 'bn'
                           ? 'পুনরায় এআই প্রসেস'
                           : 'Reprocess with Gemini'}
@@ -307,3 +358,4 @@ export const TelegramInboxView: React.FC<TelegramInboxViewProps> = ({
     </div>
   );
 };
+

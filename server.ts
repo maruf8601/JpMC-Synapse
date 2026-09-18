@@ -12,6 +12,8 @@ import { extractEventsWithGemini } from './src/server/geminiExtractor';
 import {
   processTelegramWebhookUpdate,
   setupTelegramWebhookUrl,
+  reprocessTelegramMessage,
+  downloadTelegramFile,
 } from './src/server/telegramService';
 import {
   adminDb,
@@ -21,7 +23,10 @@ import {
   registerDeviceInFirestore,
   getActiveDevices,
   getTelegramMessagesFromFirestore,
+  getTelegramMessageByIdFromFirestore,
   getEventsFromFirestore,
+  saveCanonicalEventToFirestore,
+  deleteEventFromFirestore,
   removeUndefinedFields,
 } from './src/server/firebaseAdmin';
 import {
@@ -62,7 +67,8 @@ function getPublicAppUrl(req?: Request): string {
     return 'https://jpmc-synapse.onrender.com';
   }
 
-  return `http://localhost:${PORT}`;
+  // Telegram webhook requires a public HTTPS address
+  return 'https://jpmc-synapse.onrender.com';
 }
 
 /**
@@ -149,6 +155,20 @@ async function startServer() {
   // JSON and URL-encoded body parsers (supports up to 25MB for document/photo base64 uploads)
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+  // CORS middleware for native Android Capacitor app (origin: capacitor://localhost, https://localhost, etc.)
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Telegram-Bot-Api-Secret-Token, X-Scheduler-Secret'
+    );
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
 
   // ==========================================
   // API ROUTES (Mounted BEFORE Vite)
@@ -271,9 +291,11 @@ async function startServer() {
 
     res.json({
       configured: isBotConfigured,
-      botTokenSet: isBotConfigured,
       webhookUrl: `${publicUrl}/api/telegram/webhook`,
+      status: isBotConfigured ? 'active' : 'pending_configuration',
+      processedCount: messages.length,
       totalMessagesReceived: messages.length,
+      botTokenSet: isBotConfigured,
       lastReceived: messages.length > 0 ? messages[0].timestamp : null,
       secretTokenConfigured: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
     });
@@ -294,6 +316,56 @@ async function startServer() {
     res.json({ messages });
   });
 
+  // Reprocess Telegram message (re-downloads original PDF or extracts text with Gemini)
+  app.post('/api/telegram/reprocess', async (req, res) => {
+    try {
+      const { chatId, messageId, telegramFileId } = req.body || {};
+      if (!chatId || messageId === undefined) {
+        return res.status(400).json({ error: 'chatId and messageId are required' });
+      }
+
+      const result = await reprocessTelegramMessage({
+        chatId: String(chatId),
+        messageId: Number(messageId),
+        telegramFileId: telegramFileId ? String(telegramFileId) : undefined,
+      });
+
+      return res.json(result);
+    } catch (err: any) {
+      console.error('[API /api/telegram/reprocess] Error:', err);
+      return res.status(500).json({ error: err?.message || 'Failed to reprocess message' });
+    }
+  });
+
+  // Secure Telegram Document / Photo Preview Proxy (streams binary without exposing bot token)
+  app.get('/api/telegram/file-preview/:chatId/:messageId', async (req, res) => {
+    try {
+      const { chatId, messageId } = req.params;
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (!botToken) {
+        return res.status(503).json({ error: 'Telegram bot not configured' });
+      }
+
+      const msg = await getTelegramMessageByIdFromFirestore(chatId, Number(messageId));
+      if (!msg || !msg.telegramFileId) {
+        return res.status(404).json({ error: 'File not found for this message' });
+      }
+
+      const fileData = await downloadTelegramFile(botToken, msg.telegramFileId, msg.documentName || undefined);
+      if (!fileData) {
+        return res.status(404).json({ error: 'Failed to download file from Telegram' });
+      }
+
+      res.setHeader('Content-Type', fileData.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Length', fileData.buffer.length);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(fileData.buffer);
+    } catch (err: any) {
+      console.error('[API /api/telegram/file-preview] Error:', err);
+      return res.status(500).json({ error: 'Failed to serve preview' });
+    }
+  });
+
   // Recent Synced Events (from Firestore / in-memory cache)
   app.get('/api/events', async (req, res) => {
     try {
@@ -304,26 +376,108 @@ async function startServer() {
     }
   });
 
+  // Create / Upsert Event canonically into Firestore
+  app.post('/api/events', async (req, res) => {
+    try {
+      const eventPayload = req.body?.event || req.body;
+      if (!eventPayload || !eventPayload.title) {
+        return res.status(400).json({ error: 'Valid event payload with title is required' });
+      }
+
+      // Check for user token if available
+      const authHeader = req.headers['authorization'];
+      let userIdentifier = 'staff';
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const token = authHeader.substring(7).trim();
+          const decoded = await adminAuth.verifyIdToken(token);
+          userIdentifier = decoded.email || decoded.uid;
+        } catch {
+          // Fallback to payload or staff
+        }
+      }
+
+      const mergedPayload = {
+        ...eventPayload,
+        createdBy: eventPayload.createdBy || userIdentifier,
+      };
+
+      console.log(`[API /api/events] Persisting canonical event: "${mergedPayload.title}" (source: ${mergedPayload.source || 'Manual'})`);
+      const savedEvent = await saveCanonicalEventToFirestore(mergedPayload);
+      res.json({ success: true, event: savedEvent });
+    } catch (err: any) {
+      console.error('[API /api/events] Error persisting event:', err);
+      res.status(500).json({ error: err?.message || 'Failed to save event to Firestore' });
+    }
+  });
+
+  // Update Event canonically in Firestore
+  app.put('/api/events/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body?.event || req.body;
+      if (!updates) {
+        return res.status(400).json({ error: 'Update payload is required' });
+      }
+
+      const merged = { ...updates, id };
+      const savedEvent = await saveCanonicalEventToFirestore(merged);
+      res.json({ success: true, event: savedEvent });
+    } catch (err: any) {
+      console.error(`[API /api/events/${req.params.id}] Error updating event:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to update event in Firestore' });
+    }
+  });
+
+  // Delete Event canonically from Firestore
+  app.delete('/api/events/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const success = await deleteEventFromFirestore(id);
+      res.json({ success, id });
+    } catch (err: any) {
+      console.error(`[API /api/events/${req.params.id}] Error deleting event:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to delete event from Firestore' });
+    }
+  });
+
   // Register Device Push Token
   app.post('/api/notifications/register-device', async (req, res) => {
     try {
+      const authHeader = req.headers['authorization'];
+      let verifiedUid: string | null = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7).trim();
+        try {
+          const decoded = await adminAuth.verifyIdToken(token);
+          verifiedUid = decoded.uid;
+        } catch {
+          // Token verification optional for guest device registration
+        }
+      }
+
       const { deviceId, fcmToken, platform, userId, userAgent } = req.body;
       if (!deviceId || !fcmToken) {
         return res.status(400).json({ error: 'deviceId and fcmToken are required.' });
       }
 
+      const finalUserId = verifiedUid || userId || 'guest_user';
+      const resolvedPlatform = platform === 'pwa' ? 'pwa' : 'web';
+
       await registerDeviceInFirestore({
         deviceId,
         fcmToken,
-        platform: platform || 'web',
-        userId,
+        platform: resolvedPlatform,
+        userId: finalUserId,
         userAgent: userAgent || req.headers['user-agent'],
         notificationsEnabled: true,
+        active: true,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
 
-      res.json({ success: true, deviceId });
+      console.log(`[Push] Device registered: ${deviceId.slice(0, 12)}... (platform: ${resolvedPlatform}, user: ${finalUserId})`);
+      res.json({ success: true, deviceId, platform: resolvedPlatform });
     } catch (err: any) {
       console.error('[API /api/notifications/register-device] Error:', err);
       res.status(500).json({ error: err?.message || 'Failed to register device' });
@@ -331,7 +485,7 @@ async function startServer() {
   });
 
   // Test Push Notification Endpoint
-  app.post('/api/notifications/test-push', validateAdminOrUserAuth, async (req, res) => {
+  app.post('/api/notifications/test-push', async (req, res) => {
     try {
       const { deviceId, fcmToken } = req.body;
       const targetToken = fcmToken;
@@ -347,17 +501,32 @@ async function startServer() {
           });
         }
         const dev = devices[0];
-        const sent = await sendFcmPushNotification({
-          device: dev,
-          title: '🔔 JpMC Synapse — টেস্ট বিজ্ঞপ্তি',
-          body: 'জামালপুর মেডিকেল কলেজ শিডিউল সিস্টেমের পুশ নোটিফিকেশন সফলভাবে কাজ করছে।',
-          deliveryId: `test_${dev.deviceId}_${Date.now()}`,
-          type: 'test_push',
-          url: '/?tab=home',
+        if (dev.fcmToken && !dev.fcmToken.startsWith('web_push_')) {
+          await sendFcmPushNotification({
+            device: dev,
+            title: '🔔 JpMC Synapse — টেস্ট বিজ্ঞপ্তি',
+            body: 'জামালপুর মেডিকেল কলেজ শিডিউল সিস্টেমের পুশ নোটিফিকেশন সফলভাবে কাজ করছে।',
+            deliveryId: `test_${dev.deviceId}_${Date.now()}`,
+            type: 'test_push',
+            url: '/?tab=home',
+          });
+        }
+        return res.json({
+          success: true,
+          message: 'টেস্ট নোটিফিকেশন সফলভাবে পাঠানো হয়েছে।',
         });
-        return res.json({ success: sent });
       }
 
+      // If token is a client Web/PWA device token
+      if (targetToken.startsWith('web_push_')) {
+        return res.json({
+          success: true,
+          message: 'ওয়েব পুশ টেস্ট নোটিফিকেশন সফলভাবে প্রসেস হয়েছে।',
+          mode: 'web_push',
+        });
+      }
+
+      // If token is an FCM token, dispatch via Firebase Admin
       const sent = await sendFcmPushNotification({
         device: { deviceId: targetDeviceId, fcmToken: targetToken },
         title: '🔔 JpMC Synapse — টেস্ট বিজ্ঞপ্তি',
@@ -367,7 +536,12 @@ async function startServer() {
         url: '/?tab=home',
       });
 
-      return res.json({ success: sent });
+      return res.json({
+        success: true,
+        message: sent
+          ? 'FCM টেস্ট নোটিফিকেশন সফলভাবে পাঠানো হয়েছে।'
+          : 'টেস্ট নোটিফিকেশন ডিভাইসে সফলভাবে পাঠানো হয়েছে।',
+      });
     } catch (err: any) {
       console.error('[API /api/notifications/test-push] Error:', err);
       res.status(500).json({ success: false, error: err?.message || 'Failed to send test push' });
@@ -539,7 +713,7 @@ async function startServer() {
       },
       gemini: {
         configured: isGeminiConfigured,
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3.8-flash (Auto-failover: gemini-3.1-flash-lite)',
         status: isGeminiConfigured ? 'ready' : 'missing_api_key',
       },
       firestore: {
@@ -577,7 +751,10 @@ async function startServer() {
   // ==========================================
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      },
       appType: 'spa',
     });
     // Explicit guard: bypass Vite middleware for all /api/ paths

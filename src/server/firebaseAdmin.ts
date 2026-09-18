@@ -93,9 +93,10 @@ export interface DeviceRecord {
   deviceId: string;
   userId?: string;
   fcmToken: string;
-  platform: 'web' | 'android' | 'ios';
+  platform: 'web' | 'android' | 'ios' | 'pwa';
   userAgent?: string;
   notificationsEnabled: boolean;
+  active?: boolean;
   createdAt: string;
   updatedAt: string;
   lastSeenAt?: string;
@@ -244,14 +245,23 @@ export async function saveTelegramMessageToFirestore(record: {
   chatId: string;
   senderName: string;
   senderRole?: string;
+  originalSenderName?: string;
+  originalSenderRole?: string;
   timestamp: string;
   rawText: string;
   hasDocument: boolean;
   documentType?: 'pdf' | 'image' | 'text' | null;
   documentName?: string | null;
+  mimeType?: string | null;
+  fileSize?: number | null;
+  telegramFileId?: string | null;
+  caption?: string | null;
+  processingStatus?: string | null;
+  extractionStatus?: string | null;
   status: string;
   extractedEventIds: string[];
   confidence: number;
+  receivedAt?: string | null;
   processedAt: string;
 }): Promise<void> {
   const docId = `${record.chatId}_${record.messageId}`;
@@ -268,16 +278,25 @@ export async function saveTelegramMessageToFirestore(record: {
     id: record.id,
     messageId: record.messageId,
     chatId: String(record.chatId),
-    senderName: record.senderName || 'JpMC Official Notice',
-    senderRole: record.senderRole || 'Notice Broadcaster',
+    senderName: record.senderName || 'TelegramBot',
+    senderRole: record.senderRole || 'Telegram',
+    originalSenderName: record.originalSenderName || null,
+    originalSenderRole: record.originalSenderRole || null,
     timestamp: record.timestamp,
     rawText: record.rawText || '',
     hasDocument: Boolean(record.hasDocument),
     documentType: safeDocType,
     documentName: safeDocName,
+    mimeType: record.mimeType || (safeDocType === 'pdf' ? 'application/pdf' : null),
+    fileSize: typeof record.fileSize === 'number' ? record.fileSize : null,
+    telegramFileId: record.telegramFileId || null,
+    caption: record.caption || null,
+    processingStatus: record.processingStatus || 'processed',
+    extractionStatus: record.extractionStatus || null,
     status: record.status,
     extractedEventIds: Array.isArray(record.extractedEventIds) ? record.extractedEventIds : [],
     confidence: typeof record.confidence === 'number' ? record.confidence : 0,
+    receivedAt: record.receivedAt || new Date().toISOString(),
     processedAt: record.processedAt || new Date().toISOString(),
   };
 
@@ -296,7 +315,7 @@ export async function saveTelegramMessageToFirestore(record: {
 
   try {
     await adminDb.collection('telegramMessages').doc(docId).set(safeRecord, { merge: true });
-    console.log(`[FirebaseAdmin] Successfully saved Telegram message ${docId} to Firestore (docType: ${safeRecord.documentType}).`);
+    console.log(`[FirebaseAdmin] Successfully saved Telegram message ${docId} to Firestore (status: ${safeRecord.status}, docType: ${safeRecord.documentType}).`);
   } catch (err: any) {
     if (!err?.message?.includes('PERMISSION_DENIED')) {
       console.error('[FirebaseAdmin] Failed to save Telegram message to Firestore:', err?.message || err);
@@ -331,12 +350,22 @@ export async function saveExtractedEventToFirestore(event: {
   reminders?: any[];
   createdAt?: string;
   updatedAt?: string;
-}): Promise<void> {
-  const eventId = event.id;
+}): Promise<any> {
+  return saveCanonicalEventToFirestore(event);
+}
+
+/**
+ * Canonical Event Persistence into Firestore (using Firebase Admin SDK)
+ * Used by Quick Add, Manual Add, Review Center approval, and Telegram Ingestion.
+ * Ensures strict Firestore-safe serialization and non-undefined fields.
+ */
+export async function saveCanonicalEventToFirestore(event: any): Promise<any> {
+  const eventId = event.id || `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const nowIso = new Date().toISOString();
 
   const rawNormalized = {
     id: eventId,
-    title: event.title || 'শিরোনাম নির্ধারণ প্রয়োজন',
+    title: (event.title || 'শিরোনাম নির্ধারণ প্রয়োজন').trim(),
     description: event.description || '',
     eventDate: event.eventDate || null,
     startTime: event.startTime || null,
@@ -344,19 +373,29 @@ export async function saveExtractedEventToFirestore(event: {
     venue: event.venue || null,
     category: event.category || 'অন্যান্য',
     priority: event.priority || 'normal',
-    source: event.source || 'Telegram',
+    source: event.source || 'Manual',
     audience: event.audience || 'official',
     telegramMessageId: event.telegramMessageId ?? null,
     telegramChatId: event.telegramChatId ? String(event.telegramChatId) : null,
+    googleCalendarEventId: event.googleCalendarEventId || null,
+    calendarId: event.calendarId || null,
+    lastCalendarSyncAt: event.lastCalendarSyncAt || null,
+    isGCalSynced: Boolean(event.isGCalSynced),
     sender: event.sender || null,
+    committee: event.committee || null,
+    participants: event.participants || null,
     originalText: event.originalText || '',
-    confidence: typeof event.confidence === 'number' ? event.confidence : 0,
-    reviewStatus: event.reviewStatus,
-    syncStatus: event.syncStatus || 'pending',
+    confidence: typeof event.confidence === 'number' ? event.confidence : null,
+    reviewStatus: event.reviewStatus || 'auto_approved',
+    syncStatus: event.syncStatus || 'synced',
+    isAllDay: Boolean(event.isAllDay),
+    isCompleted: Boolean(event.isCompleted),
     ambiguities: Array.isArray(event.ambiguities) ? event.ambiguities : [],
     reminders: Array.isArray(event.reminders) ? event.reminders : [],
-    createdAt: event.createdAt || new Date().toISOString(),
-    updatedAt: event.updatedAt || new Date().toISOString(),
+    createdAt: event.createdAt || nowIso,
+    updatedAt: nowIso,
+    createdBy: event.createdBy || 'staff',
+    visibility: event.visibility || 'institutional',
   };
 
   const safeEvent = removeUndefinedFields(rawNormalized);
@@ -367,37 +406,70 @@ export async function saveExtractedEventToFirestore(event: {
     inMemoryEvents[existingIdx] = safeEvent;
   } else {
     inMemoryEvents.unshift(safeEvent);
-    if (inMemoryEvents.length > 200) {
-      inMemoryEvents.length = 200;
+    if (inMemoryEvents.length > 300) {
+      inMemoryEvents.length = 300;
     }
   }
 
   try {
     await adminDb.collection('events').doc(eventId).set(safeEvent, { merge: true });
     console.log(
-      `[FirebaseAdmin] Successfully saved extracted event ${eventId} to Firestore (title: "${safeEvent.title.slice(0, 30)}", status: ${safeEvent.reviewStatus}).`
+      `[FirebaseAdmin] Successfully persisted canonical event ${eventId} to Firestore (source: ${safeEvent.source}, date: ${safeEvent.eventDate}, time: ${safeEvent.startTime}, title: "${safeEvent.title.slice(0, 30)}").`
     );
   } catch (err: any) {
     if (!err?.message?.includes('PERMISSION_DENIED')) {
-      console.error('[FirebaseAdmin] Failed to save extracted event to Firestore:', err?.message || err);
+      console.error('[FirebaseAdmin] Failed to persist canonical event to Firestore:', err?.message || err);
     }
+  }
+
+  return safeEvent;
+}
+
+/**
+ * Delete an event document from Firestore and in-memory cache
+ */
+export async function deleteEventFromFirestore(eventId: string): Promise<boolean> {
+  const existingIdx = inMemoryEvents.findIndex((e) => e.id === eventId);
+  if (existingIdx >= 0) {
+    inMemoryEvents.splice(existingIdx, 1);
+  }
+
+  try {
+    await adminDb.collection('events').doc(eventId).delete();
+    console.log(`[FirebaseAdmin] Deleted event ${eventId} from Firestore.`);
+    return true;
+  } catch (err: any) {
+    console.error(`[FirebaseAdmin] Failed to delete event ${eventId} from Firestore:`, err?.message || err);
+    return false;
   }
 }
 
 /**
  * Retrieve recent events from Firestore (with in-memory fallback)
  */
-export async function getEventsFromFirestore(limitCount: number = 100): Promise<any[]> {
+export async function getEventsFromFirestore(limitCount: number = 150): Promise<any[]> {
   try {
-    const snapshot = await adminDb
-      .collection('events')
-      .orderBy('createdAt', 'desc')
-      .limit(limitCount)
-      .get();
+    let snapshot;
+    try {
+      snapshot = await adminDb
+        .collection('events')
+        .orderBy('createdAt', 'desc')
+        .limit(limitCount)
+        .get();
+    } catch {
+      // Fallback if index on createdAt is absent
+      snapshot = await adminDb.collection('events').limit(limitCount).get();
+    }
 
     const events: any[] = [];
     snapshot.forEach((doc) => events.push(doc.data()));
     if (events.length > 0) {
+      // Sort in-memory to guarantee consistent reverse chronological ordering
+      events.sort((a, b) => {
+        const timeA = a.createdAt || `${a.eventDate || '9999-99-99'} ${a.startTime || '00:00'}`;
+        const timeB = b.createdAt || `${b.eventDate || '9999-99-99'} ${b.startTime || '00:00'}`;
+        return timeB.localeCompare(timeA);
+      });
       return events;
     }
     return inMemoryEvents.slice(0, limitCount);
@@ -433,3 +505,25 @@ export async function getTelegramMessagesFromFirestore(limitCount: number = 50):
     return inMemoryTelegramMessages.slice(0, limitCount);
   }
 }
+
+/**
+ * Retrieve a single Telegram message by chatId and messageId
+ */
+export async function getTelegramMessageByIdFromFirestore(
+  chatId: string | number,
+  messageId: number
+): Promise<any | null> {
+  const docId = `${chatId}_${messageId}`;
+  try {
+    const doc = await adminDb.collection('telegramMessages').doc(docId).get();
+    if (doc.exists) {
+      return doc.data();
+    }
+  } catch (err: any) {
+    console.warn('[FirebaseAdmin] Failed to query single Telegram message:', err?.message || err);
+  }
+
+  const memMatch = inMemoryTelegramMessages.find((m) => `${m.chatId}_${m.messageId}` === docId);
+  return memMatch || null;
+}
+

@@ -7,6 +7,7 @@
 import { Category, Priority, EventEntity, ReviewStatus } from '../domain/models';
 import { TODAY_STR } from '../data/mockEvents';
 import { eventRepository } from '../data/eventRepository';
+import { apiFetch } from '../config/api';
 
 export interface ParsedMeetingResult {
   title: string;
@@ -57,7 +58,7 @@ export async function parseNoticeWithGemini(
   }
 ): Promise<MultiEventExtractionResult> {
   try {
-    const res = await fetch('/api/extract-events', {
+    const res = await apiFetch('/api/extract-events', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
