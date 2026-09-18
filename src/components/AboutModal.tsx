@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, Globe, Phone, Mail, Award, CalendarCheck2, ShieldCheck, Facebook, User } from 'lucide-react';
 import { Language } from '../domain/models';
+import jpmcLogo from '../assets/jpmc-logo.png';
+import marufPhoto from '../assets/maruf.jpg';
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -51,12 +53,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({
           <div className="flex justify-center mb-3">
             {!logoFailed ? (
               <img
-                src="https://jpmc.gov.bd/wp-content/uploads/2024/11/jmcpng.png"
+                src={jpmcLogo}
                 alt="Jamalpur Medical College Logo"
                 className="w-18 h-18 sm:w-20 sm:h-20 object-contain drop-shadow-md rounded-xl"
                 loading="eager"
-                crossOrigin="anonymous"
-                referrerPolicy="no-referrer"
                 onError={() => setLogoFailed(true)}
               />
             ) : (
@@ -139,12 +139,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({
               <div className="shrink-0 flex items-center justify-center self-center pl-2">
                 {!photoFailed ? (
                   <img
-                    src="https://jpmc.gov.bd/wp-content/uploads/2026/04/IMG_01082024.png"
+                    src={marufPhoto}
                     alt="Abdullah Al Maruf"
                     className="w-20 h-24 sm:w-24 sm:h-28 object-cover rounded-2xl border border-slate-200/90 shadow-sm bg-slate-100"
                     loading="lazy"
-                    crossOrigin="anonymous"
-                    referrerPolicy="no-referrer"
                     onError={() => setPhotoFailed(true)}
                   />
                 ) : (
