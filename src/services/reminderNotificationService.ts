@@ -5,6 +5,7 @@
  */
 
 import { EventEntity } from '../domain/models';
+import { isEventInPast } from '../domain/constants';
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default' | 'unsupported';
 
@@ -153,7 +154,13 @@ export function checkScheduledReminders(events: EventEntity[]): void {
   const briefingKey = `briefing_${dhakaDate}`;
   if (dhakaHourMin >= '07:30' && dhakaHourMin <= '08:15' && !deliveredNotifications.has(briefingKey)) {
     deliveredNotifications.add(briefingKey);
-    const todayEvents = events.filter((e) => e.eventDate === dhakaDate && e.reviewStatus === 'auto_approved');
+    const todayEvents = events.filter(
+      (e) =>
+        e.eventDate === dhakaDate &&
+        e.reviewStatus === 'auto_approved' &&
+        !e.isCompleted &&
+        !isEventInPast(e.eventDate, e.endTime, e.startTime)
+    );
     if (todayEvents.length > 0) {
       showNotification(`🌅 আজ ${dhakaDate}-এর সূচি ব্রিফিং (JpMC)`, {
         body: `আজ মোট ${todayEvents.length}টি সভা/একাডেমিক সূচি রয়েছে। প্রথম সূচি: "${todayEvents[0].title}" (${todayEvents[0].startTime})।`,
@@ -164,7 +171,12 @@ export function checkScheduledReminders(events: EventEntity[]): void {
 
   // 2. Individual Event Reminders
   for (const event of events) {
-    if (event.reviewStatus !== 'auto_approved' || !event.startTime || event.isCompleted) {
+    if (
+      event.reviewStatus !== 'auto_approved' ||
+      !event.startTime ||
+      event.isCompleted ||
+      isEventInPast(event.eventDate, event.endTime, event.startTime)
+    ) {
       continue;
     }
 

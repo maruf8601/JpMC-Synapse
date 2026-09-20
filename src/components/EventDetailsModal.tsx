@@ -6,8 +6,6 @@ import {
   CATEGORY_COLORS,
   toBengaliNumber,
 } from '../domain/constants';
-import { createGoogleCalendarEvent } from '../services/googleCalendarService';
-import { eventRepository } from '../data/eventRepository';
 import {
   X,
   MapPin,
@@ -17,7 +15,6 @@ import {
   Users,
   FileText,
   Share2,
-  CalendarPlus,
   Trash2,
   CheckCircle2,
   Edit3,
@@ -25,7 +22,6 @@ import {
   ExternalLink,
   ShieldCheck,
   AlertCircle,
-  Loader2,
 } from 'lucide-react';
 
 interface EventDetailsModalProps {
@@ -50,12 +46,6 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
   const isAdmin = role === 'admin';
   const [showOriginalNotice, setShowOriginalNotice] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
-  const [isGCalSynced, setIsGCalSynced] = useState(
-    Boolean(event?.googleCalendarEventId || event?.source === 'Google Calendar' || event?.isGCalSynced)
-  );
-  const [isSyncingGCal, setIsSyncingGCal] = useState(false);
-  const [gcalError, setGcalError] = useState<string | null>(null);
-  const [gcalSuccessLink, setGcalSuccessLink] = useState<string | null>(null);
 
   if (!event) return null;
 
@@ -76,54 +66,6 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
       navigator.clipboard.writeText(textToShare);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2500);
-    }
-  };
-
-  const handleSyncToGCal = async () => {
-    if (isGCalSynced && !gcalError) return;
-    setIsSyncingGCal(true);
-    setGcalError(null);
-    try {
-      const result = await createGoogleCalendarEvent(event, { interactive: true });
-      setIsGCalSynced(true);
-      if (result.htmlLink) {
-        setGcalSuccessLink(result.htmlLink);
-      }
-      // Persist real sync status in event repository and Firestore
-      eventRepository.updateEvent({
-        ...event,
-        isGCalSynced: true,
-        googleCalendarEventId: result.id,
-        calendarId: 'primary',
-        lastCalendarSyncAt: new Date().toISOString(),
-      });
-    } catch (err: any) {
-      if (err?.message === 'CALENDAR_AUTH_CANCELLED') {
-        setGcalError(
-          language === 'bn'
-            ? 'ক্যালেন্ডার অনুমোদন উইন্ডো বন্ধ করা হয়েছে। সিঙ্ক করতে আবার চেষ্টা করুন।'
-            : 'Google Calendar authorization window was closed. Click again to retry.'
-        );
-      } else if (
-        err?.message?.includes('GOOGLE_CALENDAR_AUTH_REQUIRED') ||
-        err?.message?.includes('OAuth') ||
-        err?.message?.includes('Sign in')
-      ) {
-        setGcalError(
-          language === 'bn'
-            ? 'গুগল ক্যালেন্ডার অনুমোদন প্রয়োজন। নিচে বাটনে ক্লিক করে অনুমোদন দিন।'
-            : 'Google Calendar authorization required. Click below to authorize and sync.'
-        );
-      } else {
-        console.warn('[EventDetailsModal] Google Calendar sync issue:', err?.message || err);
-        setGcalError(
-          err?.message ||
-            (language === 'bn' ? 'গুগল ক্যালেন্ডার সিঙ্ক ব্যর্থ হয়েছে' : 'Google Calendar sync failed')
-        );
-      }
-      setIsGCalSynced(false);
-    } finally {
-      setIsSyncingGCal(false);
     }
   };
 
@@ -282,56 +224,6 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
             </div>
           </div>
 
-          {/* GCal Status or Error Message */}
-          {gcalError && (
-            <div className="p-3 bg-amber-50/90 border border-amber-200 rounded-xl text-xs text-amber-900 flex flex-col gap-2">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="font-semibold">{language === 'bn' ? 'গুগল ক্যালেন্ডার তথ্য' : 'Google Calendar Information'}</p>
-                  <p className="text-[11px] text-amber-800 mt-0.5">{gcalError}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 pt-0.5">
-                <button
-                  type="button"
-                  onClick={handleSyncToGCal}
-                  disabled={isSyncingGCal}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#006A60] hover:bg-teal-700 text-white font-semibold text-xs transition cursor-pointer disabled:opacity-50"
-                >
-                  {isSyncingGCal ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <CalendarPlus className="w-3.5 h-3.5" />
-                  )}
-                  <span>
-                    {isSyncingGCal
-                      ? (language === 'bn' ? 'অনুমোদন হচ্ছে...' : 'Authorizing...')
-                      : (language === 'bn' ? 'ক্যালেন্ডার কানেক্ট ও সিঙ্ক করুন' : 'Connect & Sync Calendar')}
-                  </span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {gcalSuccessLink && (
-            <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>{language === 'bn' ? 'গুগল ক্যালেন্ডারে যোগ করা হয়েছে' : 'Added to Google Calendar'}</span>
-              </span>
-              <a
-                href={gcalSuccessLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-emerald-700 font-bold hover:underline flex items-center gap-1"
-              >
-                <span>{language === 'bn' ? 'দেখুন' : 'Open'}</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          )}
-
           {/* Original Source Notice Toggle */}
           {event.originalText && (
             <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
@@ -358,36 +250,13 @@ export const EventDetailsModal: React.FC<EventDetailsModalProps> = ({
 
         {/* Action Buttons Bar */}
         <div className="bg-slate-50 p-4 border-t border-slate-200 space-y-2">
-          <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="grid grid-cols-2 gap-2 text-xs">
             <button
               onClick={() => onToggleComplete(event.id)}
               className="flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 font-semibold text-slate-700 transition"
             >
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               <span>{event.isCompleted ? (language === 'bn' ? 'অসম্পূর্ণ' : 'Pending') : (language === 'bn' ? 'সম্পন্ন' : 'Done')}</span>
-            </button>
-
-            <button
-              onClick={handleSyncToGCal}
-              disabled={isSyncingGCal}
-              className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl border font-semibold transition ${
-                isGCalSynced
-                  ? 'bg-sky-50 border-sky-300 text-sky-800'
-                  : 'bg-white border-slate-300 hover:bg-slate-100 text-slate-700'
-              }`}
-            >
-              {isSyncingGCal ? (
-                <Loader2 className="w-4 h-4 text-sky-600 animate-spin" />
-              ) : (
-                <CalendarPlus className="w-4 h-4 text-sky-600" />
-              )}
-              <span>
-                {isSyncingGCal
-                  ? (language === 'bn' ? 'সিঙ্ক হচ্ছে...' : 'Syncing...')
-                  : isGCalSynced
-                  ? (language === 'bn' ? 'গুগল সিঙ্কড' : 'GCal Synced')
-                  : (language === 'bn' ? 'গুগলে সিঙ্ক' : 'Sync GCal')}
-              </span>
             </button>
 
             <button

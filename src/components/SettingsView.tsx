@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Language, NavigationTab } from '../domain/models';
 import {
   Bell,
-  Calendar,
   MessageSquare,
   Clock,
   Globe,
@@ -25,7 +24,6 @@ import {
   LogIn,
   Loader2,
 } from 'lucide-react';
-import { syncWithGoogleCalendar } from '../services/googleCalendarService';
 import {
   auth,
   testFirestoreConnection,
@@ -33,11 +31,6 @@ import {
 import {
   googleSignIn,
   logoutGoogle,
-  requestCalendarAccess,
-  logoutCalendar,
-  subscribeCalendarAuth,
-  getCalendarAuthState,
-  CalendarAuthState,
 } from '../services/googleAuth';
 import {
   getNotificationPermission,
@@ -68,6 +61,13 @@ interface SettingsViewProps {
   onResetData: () => void;
   onNavigateToTab?: (tab: NavigationTab) => void;
   onOpenInstallModal?: () => void;
+  userProfile?: {
+    displayName?: string;
+    role?: 'admin' | 'user';
+    email?: string;
+    authMethod?: 'admin-google' | 'normal-user';
+  } | null;
+  onLogout?: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -79,6 +79,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onResetData,
   onNavigateToTab,
   onOpenInstallModal,
+  userProfile,
+  onLogout,
 }) => {
   // Telegram Bot real status from server
   const [telegramStatus, setTelegramStatus] = useState<{
@@ -127,15 +129,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     model: 'gemini-3.8-flash (Auto-failover: gemini-3.1-flash-lite)',
   });
 
-  // Google User & Calendar real state
+  // Google User real state
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(
     auth.currentUser?.email || null
   );
-  const [calendarAuth, setCalendarAuth] = useState<CalendarAuthState>(getCalendarAuthState());
-  const [isAuthorizingCalendar, setIsAuthorizingCalendar] = useState(false);
-  const [calendarAuthMessage, setCalendarAuthMessage] = useState<string | null>(null);
-  const [isCalendarSyncing, setIsCalendarSyncing] = useState(false);
-  const [calendarSyncResult, setCalendarSyncResult] = useState<string | null>(null);
 
   // Firestore status
   const [isFirestoreConnected, setIsFirestoreConnected] = useState(false);
@@ -228,19 +225,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setCurrentUserEmail(user?.email || null);
     });
 
-    // 5. Calendar Auth listener for Google Calendar
-    const unsubscribeCal = subscribeCalendarAuth((state) => {
-      setCalendarAuth(state);
-    });
-
-    // 6. Test Firestore directly
+    // 5. Test Firestore directly
     testFirestoreConnection().then((connected) => {
       setIsFirestoreConnected(connected);
     });
 
     return () => {
       unsubscribeAuth();
-      unsubscribeCal();
     };
   }, []);
 
@@ -342,76 +333,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleConnectCalendar = async () => {
-    setIsAuthorizingCalendar(true);
-    setCalendarAuthMessage(null);
-    try {
-      await requestCalendarAccess('consent');
-      setCalendarAuthMessage(
-        language === 'bn'
-          ? 'গুগল ক্যালেন্ডার পারমিশন সফলভাবে অনুমোদিত ও যাচাই হয়েছে!'
-          : 'Google Calendar successfully authorized and verified!'
-      );
-    } catch (err: any) {
-      console.warn('[SettingsView] Calendar auth error:', err);
-      if (err?.message === 'POPUP_CLOSED') {
-        setCalendarAuthMessage(
-          language === 'bn'
-            ? 'পপআপ বন্ধ করা হয়েছে। কানেক্ট করতে পুনরায় চেষ্টা করুন।'
-            : 'Popup window closed before completion. Please retry.'
-        );
-      } else if (err?.message === 'POPUP_BLOCKED') {
-        setCalendarAuthMessage(
-          language === 'bn'
-            ? 'ব্রাউজার পপআপ আটকে দিয়েছে। ব্রাউজার বারে Popups Allow করুন।'
-            : 'Popup was blocked by browser. Please allow popups for this site.'
-        );
-      } else {
-        setCalendarAuthMessage(
-          err?.message || (language === 'bn' ? 'ক্যালেন্ডার অনুমোদন ব্যর্থ হয়েছে।' : 'Calendar authorization failed.')
-        );
-      }
-    } finally {
-      setIsAuthorizingCalendar(false);
-    }
-  };
-
-  const handleDisconnectCalendar = () => {
-    logoutCalendar();
-    setCalendarAuthMessage(
-      language === 'bn' ? 'গুগল ক্যালেন্ডার ডিসকানেক্ট করা হয়েছে।' : 'Google Calendar disconnected.'
-    );
-  };
-
-  const handleCalendarSyncNow = async () => {
-    if (!calendarAuth.isAuthorized) {
-      setCalendarAuthMessage(
-        language === 'bn'
-          ? 'গুগল ক্যালেন্ডার সিঙ্কের পূর্বে ক্যালেন্ডার পারমিশন কানেক্ট করুন।'
-          : 'Please connect and authorize Google Calendar before syncing.'
-      );
-      return;
-    }
-    setIsCalendarSyncing(true);
-    setCalendarSyncResult(null);
-    try {
-      const res = await syncWithGoogleCalendar();
-      setCalendarSyncResult(
-        language === 'bn'
-          ? `সিঙ্ক সম্পন্ন! এক্সপোর্ট: ${res.exportedCount}টি, ইমপোর্ট: ${res.importedCount}টি`
-          : `Sync completed! Exported: ${res.exportedCount}, Imported: ${res.importedCount}`
-      );
-    } catch (err: any) {
-      setCalendarSyncResult(
-        language === 'bn'
-          ? `সিঙ্ক ব্যর্থ: ${err?.message || 'পুনরায় ক্যালেন্ডার কানেক্ট করুন'}`
-          : `Sync failed: ${err?.message || 'Please reconnect Google Calendar'}`
-      );
-    } finally {
-      setIsCalendarSyncing(false);
-    }
-  };
-
   const handleRequestNotification = async () => {
     const perm = await requestNotificationPermission();
     setNotificationPermission(perm);
@@ -432,10 +353,52 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </h2>
         <p className="text-xs text-slate-500 mt-0.5">
           {language === 'bn'
-            ? 'টেলিগ্রাম ওয়েবহুক, গুগল ক্যালেন্ডার, ফায়ারস্টোর ক্লাউড এবং রিমাইন্ডার'
-            : 'Configure real Telegram webhook, Google Calendar, Cloud Firestore & notifications'}
+            ? 'টেলিগ্রাম ওয়েবহুক, ফায়ারস্টোর ক্লাউড এবং পুশ রিমাইন্ডার'
+            : 'Configure real Telegram webhook, Cloud Firestore, Google Drive & notifications'}
         </p>
       </div>
+
+      {/* User Session & Account Card */}
+      {userProfile && (
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-teal-50 border border-teal-200/80 text-[#006A60] flex items-center justify-center font-bold text-sm">
+              {userProfile.displayName ? userProfile.displayName.charAt(0).toUpperCase() : 'U'}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-slate-900 leading-tight">
+                  {userProfile.displayName || 'Faculty Member'}
+                </h3>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    userProfile.role === 'admin'
+                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                      : 'bg-teal-50 text-teal-700 border-teal-200'
+                  }`}
+                >
+                  {userProfile.role === 'admin' ? 'অ্যাডমিন' : 'শিক্ষক ও কর্মকর্তা'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {userProfile.role === 'admin'
+                  ? (userProfile.email || 'Google Sign-In')
+                  : 'প্রাতিষ্ঠানিক গোপন কোড দ্বারা সক্রিয় সেশন'}
+              </p>
+            </div>
+          </div>
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              title="লগআউট করুন"
+            >
+              <LogIn className="w-3.5 h-3.5 rotate-180" />
+              <span>{language === 'bn' ? 'লগআউট' : 'Logout'}</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 1. Real Connectivity Status Card */}
       <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3">
@@ -576,121 +539,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               ? 'গুগল সাইন ইন'
               : 'Sign in with Google'}
           </button>
-        </div>
-
-        {/* Google Calendar Real OAuth & Sync */}
-        <div className="py-2.5 border-b border-slate-100 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
-                <Calendar className="w-4 h-4" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-800">
-                  {language === 'bn' ? 'গুগল ক্যালেন্ডার (Google Calendar API)' : 'Google Calendar API'}
-                </h4>
-                <p className="text-[11px] text-slate-500">
-                  {calendarAuth.status === 'connected'
-                    ? `${calendarAuth.email || 'Primary Calendar'} • ${
-                        language === 'bn' ? 'অনুমোদিত ও যাচাইকৃত' : 'Authorized & verified'
-                      }`
-                    : calendarAuth.status === 'checking'
-                    ? language === 'bn'
-                      ? 'যাচাই করা হচ্ছে...'
-                      : 'Verifying calendar access...'
-                    : calendarAuth.status === 'error'
-                    ? calendarAuth.errorMessage || (language === 'bn' ? 'অনুমোদনে ত্রুটি' : 'Authorization error')
-                    : language === 'bn'
-                    ? 'ক্যালেন্ডার পারমিশন প্রয়োজন (calendar.events)'
-                    : 'Awaiting calendar.events scope'}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span
-                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${
-                  calendarAuth.status === 'connected'
-                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                    : calendarAuth.status === 'checking'
-                    ? 'bg-amber-50 text-amber-800 border-amber-200'
-                    : 'bg-slate-50 text-slate-700 border-slate-200'
-                }`}
-              >
-                {calendarAuth.status === 'connected'
-                  ? language === 'bn'
-                    ? 'সংযুক্ত ✓'
-                    : 'Connected'
-                  : calendarAuth.status === 'checking'
-                  ? language === 'bn'
-                    ? 'যাচাই হচ্ছে...'
-                    : 'Checking...'
-                  : language === 'bn'
-                  ? 'অনুমোদন বাকি'
-                  : 'Not Connected'}
-              </span>
-
-              {calendarAuth.isAuthorized ? (
-                <button
-                  onClick={handleDisconnectCalendar}
-                  className="text-xs font-semibold px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition cursor-pointer"
-                >
-                  {language === 'bn' ? 'ডিসকানেক্ট' : 'Disconnect'}
-                </button>
-              ) : (
-                <button
-                  onClick={handleConnectCalendar}
-                  disabled={isAuthorizingCalendar}
-                  className="text-xs font-semibold px-3 py-1 rounded-full border border-teal-600 bg-[#006A60] hover:bg-teal-700 text-white shadow-2xs transition cursor-pointer disabled:opacity-50 flex items-center gap-1"
-                >
-                  {isAuthorizingCalendar && <Loader2 className="w-3 h-3 animate-spin" />}
-                  <span>
-                    {isAuthorizingCalendar
-                      ? language === 'bn'
-                        ? 'অনুমোদন হচ্ছে...'
-                        : 'Connecting...'
-                      : language === 'bn'
-                      ? 'ক্যালেন্ডার কানেক্ট'
-                      : 'Connect Calendar'}
-                  </span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Sync actions & result message */}
-          {calendarAuth.isAuthorized && (
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <button
-                onClick={handleCalendarSyncNow}
-                disabled={isCalendarSyncing}
-                className="flex items-center gap-1.5 text-xs bg-[#006A60] hover:bg-teal-700 text-white font-semibold px-3 py-1.5 rounded-xl shadow-2xs transition cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isCalendarSyncing ? 'animate-spin' : ''}`} />
-                <span>
-                  {isCalendarSyncing
-                    ? language === 'bn'
-                      ? 'ক্যালেন্ডার সিঙ্ক হচ্ছে...'
-                      : 'Syncing Calendar...'
-                    : language === 'bn'
-                    ? 'গুগল ক্যালেন্ডারে সিঙ্ক করুন'
-                    : 'Sync with Google Calendar'}
-                </span>
-              </button>
-
-              {calendarSyncResult && (
-                <span className="text-[11px] text-teal-800 font-medium">
-                  {calendarSyncResult}
-                </span>
-              )}
-            </div>
-          )}
-
-          {calendarAuthMessage && (
-            <div className="p-2 rounded-lg bg-teal-50/80 border border-teal-200 text-teal-900 text-[11px]">
-              {calendarAuthMessage}
-            </div>
-          )}
         </div>
 
         {/* Firestore Database Status */}

@@ -87,6 +87,47 @@ export function getDhakaNow(): Date {
 }
 
 /**
+ * Returns current date string in Asia/Dhaka timezone (YYYY-MM-DD)
+ */
+export function getDhakaDateString(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+}
+
+/**
+ * Returns current time string in Asia/Dhaka timezone (HH:mm, 24-hour)
+ */
+export function getDhakaTimeString(): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Dhaka',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date());
+}
+
+/**
+ * Accurately determines if an event has already ended / is in the past in Asia/Dhaka (+06:00)
+ */
+export function isEventInPast(
+  eventDate?: string | null,
+  endTime?: string | null,
+  startTime?: string | null
+): boolean {
+  if (!eventDate) return false;
+  const todayDhaka = getDhakaDateString();
+  if (eventDate < todayDhaka) return true;
+  if (eventDate > todayDhaka) return false;
+
+  // On the same day: if endTime or startTime has passed, treat as completed/historical
+  const timeToCheck =
+    endTime && endTime.trim() ? endTime.trim() : startTime && startTime.trim() ? startTime.trim() : null;
+  if (!timeToCheck) return false;
+
+  const nowDhakaTime = getDhakaTimeString();
+  return timeToCheck < nowDhakaTime;
+}
+
+/**
  * Formats a Date or YYYY-MM-DD string into Bengali e.g. "বৃহস্পতিবার, ১৭ সেপ্টেম্বর ২০২৬"
  */
 export function formatBengaliDate(dateInput?: Date | string | null): string {

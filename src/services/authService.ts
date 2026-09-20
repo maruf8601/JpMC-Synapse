@@ -1,0 +1,290 @@
+/**
+ * JpMC Synapse — Authentication Service
+ * Dual-Authentication Model:
+ * 1. Normal User / Faculty: Full Name + Institutional Secret Code (server-side validated, persistent session)
+ * 2. Admin: Google Sign-In (restricted to authorized administrator accounts only)
+ */
+
+import { auth } from './firebaseClient';
+import { signOut } from 'firebase/auth';
+import { googleSignIn, DRIVE_SCOPE } from './googleAuth';
+import { apiFetch } from '../config/api';
+
+export type AuthMethod = 'admin-google' | 'normal-user';
+
+export interface UserSessionProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  role: 'admin' | 'user';
+  active: boolean;
+  authMethod: AuthMethod;
+}
+
+export interface StoredSession {
+  token: string;
+  sessionId: string;
+  expiresAt: string;
+  user: UserSessionProfile;
+}
+
+export interface AppAuthState {
+  initialized: boolean;
+  authenticated: boolean;
+  authMethod: AuthMethod | null;
+  role: 'admin' | 'user' | null;
+  profile: UserSessionProfile | null;
+}
+
+const SESSION_STORAGE_KEY = 'jpmc_synapse_user_session_v1';
+
+/**
+ * Returns saved normal user session from localStorage if present
+ */
+export function getStoredUserSession(): StoredSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.token && parsed.user) {
+      return parsed;
+    }
+  } catch (e) {
+    console.warn('[authService] Failed reading stored user session:', e);
+  }
+  return null;
+}
+
+/**
+ * Clears saved normal user session
+ */
+export function clearStoredUserSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {}
+}
+
+/**
+ * Normal User Login: Validates Name + Institutional Secret Code on server
+ * SECURITY: Never stores the secret code on the client.
+ */
+export async function loginNormalUser(name: string, accessCode: string): Promise<UserSessionProfile> {
+  const trimmedName = name.trim();
+  const trimmedCode = accessCode.trim();
+
+  if (!trimmedName) {
+    throw new Error('অনুগ্রহ করে আপনার পূর্ণ নাম লিখুন।');
+  }
+  if (!trimmedCode) {
+    throw new Error('অনুগ্রহ করে প্রাতিষ্ঠানিক অ্যাক্সেস কোড লিখুন।');
+  }
+
+  let res: Response;
+  try {
+    res = await apiFetch('/api/auth/user-login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: trimmedName,
+        accessCode: trimmedCode,
+      }),
+    });
+  } catch (networkErr) {
+    console.warn('[authService] Network error during loginNormalUser:', networkErr);
+    throw new Error('সার্ভারের সাথে সংযোগ স্থাপন করা যাচ্ছে না।');
+  }
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || !data.success) {
+    if (data.error === 'ACCESS_CODE_NOT_CONFIGURED') {
+      throw new Error('সার্ভারে প্রাতিষ্ঠানিক অ্যাক্সেস কোড কনফিগার করা হয়নি।');
+    }
+    if (data.error === 'INVALID_ACCESS_CODE') {
+      throw new Error('প্রাতিষ্ঠানিক অ্যাক্সেস কোড সঠিক নয়।');
+    }
+    if (data.error === 'NAME_REQUIRED') {
+      throw new Error('অনুগ্রহ করে আপনার পূর্ণ নাম লিখুন।');
+    }
+    throw new Error('সার্ভারের সাথে সংযোগ স্থাপন করা যাচ্ছে না।');
+  }
+
+  const userProfile: UserSessionProfile = {
+    uid: data.user.uid,
+    email: data.user.email || '',
+    displayName: data.user.displayName || trimmedName,
+    role: 'user',
+    active: true,
+    authMethod: 'normal-user',
+  };
+
+  // Store session in localStorage (WITHOUT storing the access code)
+  if (data.session?.token) {
+    try {
+      const sessionToSave: StoredSession = {
+        token: data.session.token,
+        sessionId: data.session.sessionId,
+        expiresAt: data.session.expiresAt,
+        user: userProfile,
+      };
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionToSave));
+    } catch (err) {
+      console.warn('[authService] Failed writing session to localStorage:', err);
+    }
+  }
+
+  return userProfile;
+}
+
+/**
+ * Verifies stored session token with server on app launch
+ */
+export async function verifyStoredUserSession(): Promise<UserSessionProfile | null> {
+  const session = getStoredUserSession();
+  if (!session || !session.token) {
+    return null;
+  }
+
+  try {
+    const res = await apiFetch('/api/auth/verify-session', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionToken: session.token,
+      }),
+    });
+
+    if (!res.ok) {
+      clearStoredUserSession();
+      return null;
+    }
+
+    const data = await res.json();
+    if (!data.valid || !data.user) {
+      clearStoredUserSession();
+      return null;
+    }
+
+    const userProfile: UserSessionProfile = {
+      uid: data.user.uid,
+      email: data.user.email || '',
+      displayName: data.user.displayName || session.user.displayName,
+      role: 'user',
+      active: true,
+      authMethod: 'normal-user',
+    };
+
+    return userProfile;
+  } catch (err) {
+    console.warn('[authService] Session verification network notice:', err);
+    // In case of transient offline, allow existing stored session to load for offline cache
+    if (session.user) {
+      return {
+        ...session.user,
+        role: 'user',
+        authMethod: 'normal-user',
+      };
+    }
+    return null;
+  }
+}
+
+/**
+ * Admin Login: Signs in with Google and validates administrator authorization
+ */
+export async function loginAdminGoogle(): Promise<UserSessionProfile> {
+  const result = await googleSignIn();
+  if (!result || !result.user) {
+    throw new Error('USER_CANCELLED');
+  }
+
+  const idToken = await result.user.getIdToken();
+  const verifyRes = await apiFetch('/api/auth/admin-verify', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = await verifyRes.json().catch(() => ({}));
+
+  if (!verifyRes.ok || !data.authorized) {
+    // Strictly sign out unauthorized Google account immediately
+    await signOut(auth).catch(() => {});
+    throw new Error(
+      data.error ||
+        'এই গুগল অ্যাকাউন্টটি অ্যাডমিনিস্ট্রেটর হিসেবে অনুমোদিত নয়। সাধারণ ব্যবহারকারী হিসেবে আপনার নাম ও অ্যাক্সেস কোড দিয়ে প্রবেশ করুন।'
+    );
+  }
+
+  // Clear any existing normal user session to avoid collision
+  clearStoredUserSession();
+
+  return {
+    uid: result.user.uid,
+    email: result.user.email || '',
+    displayName: data.user?.displayName || result.user.displayName || 'Admin',
+    role: 'admin',
+    active: true,
+    authMethod: 'admin-google',
+  };
+}
+
+/**
+ * Auth-method aware Logout:
+ * If normal-user: terminates session token and clears localStorage. Does NOT call Firebase signOut().
+ * If admin-google: signs out of Firebase Auth.
+ */
+export async function logoutUser(authMethod?: AuthMethod | null, sessionToken?: string): Promise<void> {
+  if (authMethod === 'normal-user') {
+    const token = sessionToken || getStoredUserSession()?.token;
+    if (token) {
+      try {
+        await apiFetch('/api/auth/logout', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ sessionToken: token }),
+        });
+      } catch {}
+    }
+    clearStoredUserSession();
+    return;
+  }
+
+  if (authMethod === 'admin-google') {
+    try {
+      await signOut(auth);
+    } catch {}
+    return;
+  }
+
+  // Fallback: clear both
+  const token = sessionToken || getStoredUserSession()?.token;
+  if (token) {
+    try {
+      await apiFetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sessionToken: token }),
+      });
+    } catch {}
+  }
+  clearStoredUserSession();
+  try {
+    await signOut(auth);
+  } catch {}
+}

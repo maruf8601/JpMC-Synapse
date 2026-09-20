@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { eventRepository } from './data/eventRepository';
 import { EventEntity, NavigationTab, Language, Category, AnnouncementEntity } from './domain/models';
 import { TopAppBar } from './components/TopAppBar';
@@ -26,12 +26,25 @@ import { checkScheduledReminders } from './services/reminderNotificationService'
 import { initForegroundNotificationListener } from './services/pushNotificationService';
 import { getPendingAnnouncementsForUser } from './services/announcementService';
 import { auth } from './services/firebaseClient';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { apiFetch } from './config/api';
+import {
+  getStoredUserSession,
+  verifyStoredUserSession,
+  clearStoredUserSession,
+  logoutUser,
+  UserSessionProfile,
+  AppAuthState,
+  AuthMethod,
+} from './services/authService';
 import {
   getUserAboutVersionSeen,
   setUserAboutVersionSeen,
   CURRENT_ABOUT_VERSION,
+  hasSeenAboutPopup,
+  setAboutPopupSeen,
+  hasUserSeenAbout,
+  setUserSeenAbout,
 } from './services/userPreferencesService';
 
 export default function App() {
@@ -40,17 +53,26 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
 
-  // Auth & Profile state
-  const [authStatus, setAuthStatus] = useState<'checking' | 'unauthenticated' | 'authenticated'>('checking');
-  const [userProfile, setUserProfile] = useState<{
-    uid: string;
-    email: string;
-    displayName: string;
-    role: 'admin' | 'user';
-    active: boolean;
-  } | null>(null);
+  // Central Application Authentication State (AppAuthState)
+  const [authState, setAuthState] = useState<AppAuthState>({
+    initialized: false,
+    authenticated: false,
+    authMethod: null,
+    role: null,
+    profile: null,
+  });
+
+  const userProfile = authState.profile;
+  const userRole = authState.role || 'user';
+  const authStatus = !authState.initialized
+    ? 'checking'
+    : !authState.authenticated
+    ? 'unauthenticated'
+    : 'authenticated';
+
   const [isFirstLoginAbout, setIsFirstLoginAbout] = useState(false);
   const [isSavingAboutPref, setIsSavingAboutPref] = useState(false);
+  const checkedFirstLoginAboutRef = useRef<string | null>(null);
 
   // Announcement popup state
   const [announcementQueue, setAnnouncementQueue] = useState<AnnouncementEntity[]>([]);
@@ -61,6 +83,8 @@ export default function App() {
   const [, setVersion] = useState(0);
   const [selectedEvent, setSelectedEvent] = useState<EventEntity | null>(null);
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<EventEntity | null>(null);
+  const [prefilledDate, setPrefilledDate] = useState<string | null>(null);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isPWAInstallModalOpen, setIsPWAInstallModalOpen] = useState(false);
   const [isReviewOpenFromHeader, setIsReviewOpenFromHeader] = useState(false);
@@ -83,91 +107,170 @@ export default function App() {
     return () => window.removeEventListener('popstate', handleLocationChange);
   }, []);
 
-  // Firebase Authentication & Authorization Resolver
+  // Dual-Authentication & Authorization Resolver:
+  // 1. Normal User Session: Full Name + Institutional Secret Code (persistent in localStorage)
+  // 2. Admin Login: Google Sign-In (strictly restricted to authorized administrator accounts)
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
-      if (!firebaseUser) {
-        setUserProfile(null);
-        setAuthStatus('unauthenticated');
-        return;
+    let isMounted = true;
+
+    async function initializeAuth() {
+      console.log('[Auth] Restoring authentication...');
+
+      // Step A: Check persistent Normal User session first
+      const stored = getStoredUserSession();
+      console.log('[Auth] Normal user session:', stored?.token ? 'present' : 'absent');
+
+      if (stored?.token) {
+        try {
+          const verifiedUser = await verifyStoredUserSession();
+          if (verifiedUser && isMounted) {
+            console.log('[Auth] Selected auth method: normal-user');
+            setAuthState({
+              initialized: true,
+              authenticated: true,
+              authMethod: 'normal-user',
+              role: 'user',
+              profile: verifiedUser,
+            });
+            console.log('[Auth] Authentication initialized');
+            return () => {};
+          }
+        } catch (sessionErr) {
+          console.warn('[Auth] Normal user session verification warning:', sessionErr);
+          if (stored.user && isMounted) {
+            console.log('[Auth] Selected auth method: normal-user (cached)');
+            setAuthState({
+              initialized: true,
+              authenticated: true,
+              authMethod: 'normal-user',
+              role: 'user',
+              profile: { ...stored.user, role: 'user', authMethod: 'normal-user' },
+            });
+            console.log('[Auth] Authentication initialized');
+            return () => {};
+          }
+        }
       }
 
-      try {
-        const idToken = await firebaseUser.getIdToken();
-        const profileRes = await apiFetch('/api/auth/profile', {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-          },
-        });
-        const profile = profileRes.ok ? await profileRes.json() : null;
+      // Step B: Firebase Auth listener for Admin Google Sign-In only
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+        if (!isMounted) return;
 
-        const role: 'admin' | 'user' =
-          profile?.role === 'admin' ||
-          ['marufjb@gmail.com', 'nasir230171@gmail.com'].includes(
-            (firebaseUser.email || '').toLowerCase()
-          )
-            ? 'admin'
-            : 'user';
+        console.log('[Auth] Firebase admin user:', firebaseUser ? 'present' : 'absent');
 
-        const active = profile?.active !== false;
-
-        const resolvedProfile = {
-          uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          displayName:
-            profile?.displayName ||
-            firebaseUser.displayName ||
-            firebaseUser.email?.split('@')[0] ||
-            'Staff',
-          role,
-          active,
-        };
-
-        setUserProfile(resolvedProfile);
-
-        // Check if user has seen version 1.0 of the institutional About popup
-        try {
-          const seenVersion = await getUserAboutVersionSeen(firebaseUser.uid);
-          if (seenVersion !== CURRENT_ABOUT_VERSION) {
-            setIsFirstLoginAbout(true);
-            setIsAboutOpen(true);
-          }
-        } catch (prefErr) {
-          console.warn('[App] About version preference check warning:', prefErr);
+        // CRITICAL: If a normal user session exists in storage,
+        // Firebase Auth state MUST NEVER disturb or log out the normal user!
+        const activeStored = getStoredUserSession();
+        if (activeStored?.token) {
+          console.log('[Auth] Active normal-user session exists, ignoring Firebase auth change.');
+          return;
         }
 
-        setAuthStatus('authenticated');
-      } catch (err) {
-        console.warn('[App] Auth profile fetch fallback:', err);
-        const role: 'admin' | 'user' =
-          ['marufjb@gmail.com', 'nasir230171@gmail.com'].includes(
-            (firebaseUser.email || '').toLowerCase()
-          )
-            ? 'admin'
-            : 'user';
+        if (!firebaseUser) {
+          console.log('[Auth] Selected auth method: none');
+          setAuthState({
+            initialized: true,
+            authenticated: false,
+            authMethod: null,
+            role: null,
+            profile: null,
+          });
+          console.log('[Auth] Authentication initialized');
+          return;
+        }
 
-        setUserProfile({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          displayName: firebaseUser.displayName || 'Staff',
-          role,
-          active: true,
-        });
-
+        // Firebase user exists: check if authorized administrator
         try {
-          const seenVersion = await getUserAboutVersionSeen(firebaseUser.uid);
-          if (seenVersion !== CURRENT_ABOUT_VERSION) {
-            setIsFirstLoginAbout(true);
-            setIsAboutOpen(true);
-          }
-        } catch {}
+          const idToken = await firebaseUser.getIdToken();
+          const verifyRes = await apiFetch('/api/auth/admin-verify', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${idToken}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          const data = await verifyRes.json().catch(() => ({}));
 
-        setAuthStatus('authenticated');
-      }
+          if (!verifyRes.ok || !data.authorized) {
+            console.warn('[Auth] Non-admin Google account signed out:', firebaseUser.email);
+            await signOut(auth).catch(() => {});
+            if (isMounted) {
+              setAuthState({
+                initialized: true,
+                authenticated: false,
+                authMethod: null,
+                role: null,
+                profile: null,
+              });
+              console.log('[Auth] Authentication initialized');
+            }
+            return;
+          }
+
+          const adminProfile: UserSessionProfile = {
+            uid: firebaseUser.uid,
+            email: firebaseUser.email || '',
+            displayName: data.user?.displayName || firebaseUser.displayName || 'Admin',
+            role: 'admin',
+            active: true,
+            authMethod: 'admin-google',
+          };
+
+          console.log('[Auth] Selected auth method: admin-google');
+          if (isMounted) {
+            setAuthState({
+              initialized: true,
+              authenticated: true,
+              authMethod: 'admin-google',
+              role: 'admin',
+              profile: adminProfile,
+            });
+            console.log('[Auth] Authentication initialized');
+          }
+        } catch (err) {
+          console.warn('[Auth] Google Admin verification error:', err);
+          await signOut(auth).catch(() => {});
+          if (isMounted) {
+            setAuthState({
+              initialized: true,
+              authenticated: false,
+              authMethod: null,
+              role: null,
+              profile: null,
+            });
+            console.log('[Auth] Authentication initialized');
+          }
+        }
+      });
+
+      return unsubscribe;
+    }
+
+    let unsub: (() => void) | undefined;
+    initializeAuth().then((u) => {
+      if (typeof u === 'function') unsub = u;
     });
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      if (unsub) unsub();
+    };
   }, []);
+
+  const handleLogout = async () => {
+    try {
+      await logoutUser(authState.authMethod, getStoredUserSession()?.token);
+    } catch (e) {
+      console.warn('[App] Logout error:', e);
+    }
+    setAuthState({
+      initialized: true,
+      authenticated: false,
+      authMethod: null,
+      role: null,
+      profile: null,
+    });
+  };
 
   // Initialize Foreground FCM Listener and Service Worker deep link messages
   useEffect(() => {
@@ -208,6 +311,49 @@ export default function App() {
       setCurrentTab(linkedTab);
     }
   }, [userProfile?.uid, userProfile?.role, sessionDismissedAnnouncementIds]);
+
+  // Automatically show the About modal for authenticated users on their first successful login
+  useEffect(() => {
+    if (!authState.authenticated || !userProfile) return;
+
+    // Use unique identifier per user session to avoid double checks in StrictMode
+    const userIdentifier = userProfile.uid || userProfile.displayName || 'authenticated_user';
+    if (checkedFirstLoginAboutRef.current === userIdentifier) return;
+    checkedFirstLoginAboutRef.current = userIdentifier;
+
+    const userParam = {
+      uid: userProfile.uid,
+      authMethod: authState.authMethod || undefined,
+      displayName: userProfile.displayName,
+    };
+
+    // If already seen locally, no need to auto-open
+    if (hasUserSeenAbout(userParam)) {
+      return;
+    }
+
+    // Check remote Firestore preference if Google user
+    if (authState.authMethod === 'admin-google' && userProfile.uid) {
+      getUserAboutVersionSeen(userProfile.uid)
+        .then((remoteVersion) => {
+          if (!remoteVersion) {
+            setIsFirstLoginAbout(true);
+            setIsAboutOpen(true);
+          } else {
+            setUserSeenAbout(userParam);
+          }
+        })
+        .catch(() => {
+          setIsFirstLoginAbout(true);
+          setIsAboutOpen(true);
+        });
+      return;
+    }
+
+    // For Staff Account users or offline/first-login:
+    setIsFirstLoginAbout(true);
+    setIsAboutOpen(true);
+  }, [authState.authenticated, authState.authMethod, userProfile]);
 
   // Check active announcements for the authenticated user
   useEffect(() => {
@@ -307,16 +453,33 @@ export default function App() {
   };
 
   const handleEditEvent = (event: EventEntity) => {
-    // Open QuickAdd or inline edit
+    setEditingEvent(event);
     setSelectedEvent(null);
     setIsQuickAddOpen(true);
+  };
+
+  const handleUpdateEvent = async (updatedEvent: EventEntity) => {
+    await eventRepository.updateEvent(updatedEvent);
+    if (selectedEvent && selectedEvent.id === updatedEvent.id) {
+      setSelectedEvent(updatedEvent);
+    }
   };
 
   const handleGetStartedFromAbout = async () => {
     setIsSavingAboutPref(true);
     try {
-      if (userProfile?.uid) {
-        await setUserAboutVersionSeen(userProfile.uid, CURRENT_ABOUT_VERSION);
+      if (userProfile) {
+        // Mark user seen in device localStorage
+        setUserSeenAbout({
+          uid: userProfile.uid,
+          authMethod: authState.authMethod || undefined,
+          displayName: userProfile.displayName,
+        });
+
+        // If Google account, also persist to Firestore
+        if (authState.authMethod === 'admin-google' && userProfile.uid) {
+          await setUserAboutVersionSeen(userProfile.uid, CURRENT_ABOUT_VERSION);
+        }
       }
     } catch (err) {
       console.warn('Error saving about version preference:', err);
@@ -355,15 +518,38 @@ export default function App() {
     );
   }
 
-  if (authStatus === 'checking') {
+  if (!authState.initialized) {
     return <SplashScreen />;
   }
 
-  if (authStatus === 'unauthenticated') {
-    return <LoginScreen onLoginSuccess={() => setAuthStatus('checking')} />;
+  if (!authState.authenticated) {
+    return (
+      <LoginScreen
+        onLoginSuccess={(profile) => {
+          if (profile) {
+            setAuthState({
+              initialized: true,
+              authenticated: true,
+              authMethod: profile.authMethod,
+              role: profile.role,
+              profile,
+            });
+          } else {
+            const stored = getStoredUserSession();
+            if (stored?.user) {
+              setAuthState({
+                initialized: true,
+                authenticated: true,
+                authMethod: stored.user.authMethod,
+                role: stored.user.role,
+                profile: stored.user,
+              });
+            }
+          }
+        }}
+      />
+    );
   }
-
-  const userRole = userProfile?.role || 'user';
 
   return (
     <DeviceFrame language={language}>
@@ -470,9 +656,19 @@ export default function App() {
                   language={language}
                 />
                 <CalendarView
-                  events={allUpcomingEvents}
+                  events={allHistoryRecords}
                   onSelectEvent={setSelectedEvent}
                   language={language}
+                  role={userRole}
+                  onAddEventOnDate={
+                    userRole === 'admin'
+                      ? (dateStr) => {
+                          setPrefilledDate(dateStr);
+                          setEditingEvent(null);
+                          setIsQuickAddOpen(true);
+                        }
+                      : undefined
+                  }
                 />
               </div>
             )}
@@ -483,6 +679,7 @@ export default function App() {
                 allEvents={allHistoryRecords}
                 language={language}
                 onSelectEvent={setSelectedEvent}
+                role={userRole}
               />
             )}
 
@@ -528,6 +725,8 @@ export default function App() {
                 onResetData={() => eventRepository.resetToDefaults()}
                 onNavigateToTab={setCurrentTab}
                 onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}
+                userProfile={userProfile}
+                onLogout={handleLogout}
               />
             )}
           </>
@@ -565,15 +764,24 @@ export default function App() {
 
       <QuickAddModal
         isOpen={isQuickAddOpen}
-        onClose={() => setIsQuickAddOpen(false)}
+        onClose={() => {
+          setIsQuickAddOpen(false);
+          setEditingEvent(null);
+          setPrefilledDate(null);
+        }}
         onAddEvent={handleAddEvent}
+        onUpdateEvent={handleUpdateEvent}
+        initialEvent={editingEvent}
+        prefilledDate={prefilledDate}
         language={language}
       />
 
       <AboutModal
         isOpen={isAboutOpen}
         onClose={() => {
-          if (!isFirstLoginAbout) {
+          if (isFirstLoginAbout) {
+            handleGetStartedFromAbout();
+          } else {
             setIsAboutOpen(false);
           }
         }}

@@ -5,6 +5,7 @@
  * Timezone: Asia/Dhaka (UTC+6)
  */
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -22,6 +23,9 @@ import {
   isUserAuthorized,
   ensureUserAuthorization,
   getUserRoleAndActive,
+  createUserSession,
+  verifyUserSession,
+  invalidateUserSession,
   INITIAL_ADMIN_EMAILS,
   registerDeviceInFirestore,
   getActiveDevices,
@@ -206,18 +210,12 @@ async function validateActiveUserAuth(req: Request, res: Response, next: NextFun
     return res.status(401).json({ error: 'Unauthorized: Token required.' });
   }
 
+  // 1. Try Firebase ID Token (for Google Admin or Custom Token)
   try {
     const decoded = await adminAuth.verifyIdToken(token);
     let authInfo = await getUserRoleAndActive(decoded.uid);
 
     if (!authInfo) {
-      // Auto-initialize standard user if needed
-      await ensureUserAuthorization({
-        uid: decoded.uid,
-        email: decoded.email,
-        name: decoded.name,
-        picture: decoded.picture,
-      });
       authInfo = { role: 'user', active: true };
     }
 
@@ -231,8 +229,22 @@ async function validateActiveUserAuth(req: Request, res: Response, next: NextFun
       active: authInfo.active,
     };
     return next();
-  } catch (err: any) {
-    return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
+  } catch {
+    // 2. Try Normal User Session Token
+    try {
+      const sessionRes = await verifyUserSession(token);
+      if (sessionRes.valid && sessionRes.user && sessionRes.user.active) {
+        (req as any).user = {
+          uid: sessionRes.user.uid,
+          displayName: sessionRes.user.displayName,
+          role: sessionRes.user.role,
+          active: true,
+        };
+        return next();
+      }
+    } catch {}
+
+    return res.status(401).json({ error: 'Unauthorized: Invalid authentication token.' });
   }
 }
 
@@ -940,7 +952,7 @@ async function startServer() {
   });
 
   /**
-   * Get Current Authenticated User Profile & Role
+   * Get Current Authenticated User Profile & Role (Supports Firebase ID Token and Session Token)
    */
   app.get('/api/auth/profile', async (req, res) => {
     try {
@@ -953,30 +965,224 @@ async function startServer() {
         return res.status(401).json({ error: 'Missing authorization token' });
       }
 
+      // 1. Try Firebase ID Token
+      try {
+        const decoded = await adminAuth.verifyIdToken(token);
+        let authInfo = await getUserRoleAndActive(decoded.uid);
+        if (!authInfo) {
+          const profile = await ensureUserAuthorization({
+            uid: decoded.uid,
+            email: decoded.email,
+            name: decoded.name,
+            picture: decoded.picture,
+          });
+          return res.json({ profile });
+        }
+
+        return res.json({
+          profile: {
+            uid: decoded.uid,
+            email: decoded.email || authInfo.email || '',
+            displayName: authInfo.displayName || decoded.name || 'User',
+            photoURL: decoded.picture || null,
+            role: authInfo.role,
+            active: authInfo.active,
+          },
+        });
+      } catch (firebaseErr) {
+        // 2. Try Normal User Session Token
+        const sessionRes = await verifyUserSession(token);
+        if (sessionRes.valid && sessionRes.user) {
+          return res.json({
+            profile: sessionRes.user,
+          });
+        }
+        return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+      }
+    } catch (err: any) {
+      res.status(401).json({ error: err?.message || 'Unauthorized' });
+    }
+  });
+
+  /**
+   * Staff Account / Normal User Login: Name + Institutional Secret Code
+   * Validated server-side against process.env.STAFF_ACCESS_CODE.
+   */
+  app.post('/api/auth/user-login', async (req, res) => {
+    try {
+      // Canonical environment variable: STAFF_ACCESS_CODE
+      // Includes backwards-compatible fallback to USER_ACCESS_CODE
+      const configuredCode = (
+        process.env.STAFF_ACCESS_CODE ||
+        process.env.USER_ACCESS_CODE ||
+        ''
+      ).trim();
+
+      console.log(
+        '[Auth] STAFF_ACCESS_CODE configured:',
+        Boolean(configuredCode)
+      );
+
+      if (!configuredCode) {
+        // Server configuration error.
+        // Never reveal the expected code.
+        return res.status(500).json({
+          error: 'ACCESS_CODE_NOT_CONFIGURED',
+        });
+      }
+
+      const submittedCode =
+        typeof req.body.accessCode === 'string'
+          ? req.body.accessCode.trim()
+          : '';
+
+      if (submittedCode !== configuredCode) {
+        return res.status(401).json({
+          error: 'INVALID_ACCESS_CODE',
+        });
+      }
+
+      const name = (
+        typeof req.body.name === 'string'
+          ? req.body.name
+          : typeof req.body.fullName === 'string'
+          ? req.body.fullName
+          : ''
+      ).trim();
+      if (!name) {
+        return res.status(400).json({
+          error: 'NAME_REQUIRED',
+        });
+      }
+
+      const deviceId = typeof req.body.deviceId === 'string' ? req.body.deviceId : undefined;
+      const result = await createUserSession(name, deviceId);
+      if (!result.success) {
+        return res.status(500).json({
+          error: result.error || 'SESSION_CREATION_FAILED',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        session: result.session,
+        user: result.user,
+        customToken: result.customToken,
+      });
+    } catch (err: any) {
+      console.error('[API /api/auth/user-login] Error:', err);
+      return res.status(500).json({
+        error: 'SERVER_ERROR',
+      });
+    }
+  });
+
+  /**
+   * Verify Persistent Normal User Session on App Launch
+   */
+  app.post('/api/auth/verify-session', async (req, res) => {
+    try {
+      const authHeader = req.headers['authorization'];
+      let token = (req.body?.token || req.body?.sessionToken || '').trim();
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7).trim();
+      }
+      if (!token) {
+        return res.status(401).json({ valid: false, error: 'সেশন টোকেন পাওয়া যায়নি' });
+      }
+      const result = await verifyUserSession(token);
+      if (!result.valid) {
+        return res.status(401).json({ valid: false, error: result.error || 'সেশনটি মেয়াদোত্তীর্ণ বা অকার্যকর' });
+      }
+      return res.status(200).json({
+        valid: true,
+        user: result.user,
+        customToken: result.customToken,
+      });
+    } catch (err: any) {
+      console.error('[API /api/auth/verify-session] Error:', err);
+      return res.status(500).json({ valid: false, error: 'সেশন যাচাইয়ে সমস্যা হয়েছে' });
+    }
+  });
+
+  /**
+   * Normal User Logout / Invalidate Session
+   */
+  app.post('/api/auth/logout', async (req, res) => {
+    try {
+      const authHeader = req.headers['authorization'];
+      let token = req.body?.sessionToken || '';
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7).trim();
+      }
+      if (token) {
+        await invalidateUserSession(token);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Logout failed' });
+    }
+  });
+
+  /**
+   * Admin Google Sign-In Verification:
+   * Verifies that the Google account is an authorized administrator.
+   * Unauthorized Google accounts are strictly rejected with role: forbidden.
+   */
+  app.post('/api/auth/admin-verify', async (req, res) => {
+    try {
+      const authHeader = req.headers['authorization'];
+      let token = '';
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7).trim();
+      }
+      if (!token) {
+        return res.status(401).json({ authorized: false, error: 'Missing authorization token' });
+      }
+
       const decoded = await adminAuth.verifyIdToken(token);
+      const email = (decoded.email || '').trim().toLowerCase();
+
       let authInfo = await getUserRoleAndActive(decoded.uid);
-      if (!authInfo) {
+      const isInitialAdmin = email && Boolean(INITIAL_ADMIN_EMAILS[email]);
+
+      if (!authInfo && isInitialAdmin) {
         const profile = await ensureUserAuthorization({
           uid: decoded.uid,
           email: decoded.email,
           name: decoded.name,
           picture: decoded.picture,
         });
-        return res.json({ profile });
+        authInfo = { role: profile.role, active: profile.active };
       }
 
-      res.json({
-        profile: {
+      const isAdmin = authInfo && authInfo.active && authInfo.role === 'admin';
+
+      if (!isAdmin) {
+        console.warn(`[Auth] Unauthorized Google Admin sign-in rejected: ${email} (${decoded.uid})`);
+        return res.status(403).json({
+          authorized: false,
+          error: 'এই গুগল অ্যাকাউন্টটি অ্যাডমিনিস্ট্রেটর হিসেবে অনুমোদিত নয়। সাধারণ ব্যবহারকারী হিসেবে আপনার নাম ও অ্যাক্সেস কোড দিয়ে প্রবেশ করুন।',
+        });
+      }
+
+      return res.json({
+        authorized: true,
+        user: {
           uid: decoded.uid,
-          email: decoded.email || authInfo.email || '',
-          displayName: authInfo.displayName || decoded.name || 'User',
+          email: decoded.email,
+          displayName: decoded.name || email.split('@')[0],
           photoURL: decoded.picture || null,
-          role: authInfo.role,
-          active: authInfo.active,
+          role: 'admin',
+          active: true,
         },
       });
     } catch (err: any) {
-      res.status(401).json({ error: err?.message || 'Unauthorized' });
+      console.error('[API /api/auth/admin-verify] Error:', err);
+      return res.status(401).json({
+        authorized: false,
+        error: 'গুগল প্রমাণীকরণ যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।',
+      });
     }
   });
 
@@ -1059,11 +1265,6 @@ async function startServer() {
         registeredDevices: devices.length,
         schedulerRunning: scheduler.isRunning,
         lastSchedulerTick: scheduler.lastTickAt,
-      },
-      calendar: {
-        service: 'Google Calendar API v3',
-        authMode: 'Client-side OAuth 2.0',
-        scope: 'https://www.googleapis.com/auth/calendar.events',
       },
     });
   });

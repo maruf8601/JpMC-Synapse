@@ -9,6 +9,7 @@ import { app, auth, db } from './firebaseClient';
 import { doc, setDoc } from 'firebase/firestore';
 import { apiFetch } from '../config/api';
 import { showNotification } from './reminderNotificationService';
+import { getStoredUserSession } from './authService';
 
 const DEVICE_ID_KEY = 'jpmc_synapse_device_id_v2';
 const FCM_TOKEN_KEY = 'jpmc_synapse_fcm_token_v2';
@@ -60,25 +61,22 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
   };
 
   try {
-    let user = auth.currentUser;
-    if (!user) {
-      try {
-        const { signInAnonymously } = await import('firebase/auth');
-        const cred = await signInAnonymously(auth);
-        user = cred.user;
-      } catch {
-        // Anonymous sign-in may not be enabled in console; proceed with standard flow
-      }
-    }
-
+    const user = auth.currentUser;
     if (user) {
       const idToken = await user.getIdToken();
       if (idToken) {
         headers['Authorization'] = `Bearer ${idToken}`;
+        return headers;
       }
     }
+
+    const stored = getStoredUserSession();
+    if (stored?.token) {
+      headers['Authorization'] = `Bearer ${stored.token}`;
+      return headers;
+    }
   } catch (err) {
-    console.warn('[Push] Could not retrieve Firebase ID token for request:', err);
+    console.warn('[Push] Could not retrieve auth token for request:', err);
   }
 
   return headers;
@@ -188,7 +186,8 @@ export async function enablePushNotifications(): Promise<{
 
     localStorage.setItem(FCM_TOKEN_KEY, token);
     const platform = getClientPlatform();
-    const userId = auth.currentUser?.uid || 'guest_user';
+    const stored = getStoredUserSession();
+    const userId = auth.currentUser?.uid || stored?.user?.uid || 'guest_user';
 
     const devicePayload = {
       deviceId,
@@ -203,17 +202,19 @@ export async function enablePushNotifications(): Promise<{
       lastSeenAt: new Date().toISOString(),
     };
 
-    // 4. Save to Firestore (Client SDK write)
-    try {
-      const deviceDocRef = doc(db, 'devices', deviceId);
-      await setDoc(deviceDocRef, devicePayload, { merge: true });
+    // 4. Save to Firestore (Client SDK write) - only if client auth is authenticated
+    if (auth.currentUser) {
+      try {
+        const deviceDocRef = doc(db, 'devices', deviceId);
+        await setDoc(deviceDocRef, devicePayload, { merge: true });
 
-      if (userId && userId !== 'guest_user') {
-        const userDeviceDocRef = doc(db, 'users', userId, 'devices', deviceId);
-        await setDoc(userDeviceDocRef, devicePayload, { merge: true });
+        if (userId && userId !== 'guest_user') {
+          const userDeviceDocRef = doc(db, 'users', userId, 'devices', deviceId);
+          await setDoc(userDeviceDocRef, devicePayload, { merge: true });
+        }
+      } catch (dbErr) {
+        console.warn('[Push] Direct Firestore device write note:', dbErr);
       }
-    } catch (dbErr) {
-      console.warn('[Push] Direct Firestore device write note:', dbErr);
     }
 
     // 5. Register on Server API

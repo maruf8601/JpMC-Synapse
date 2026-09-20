@@ -10,6 +10,7 @@ import {
   TelegramMessageEntity,
 } from '../domain/models';
 import { INITIAL_EVENTS, INITIAL_TELEGRAM_MESSAGES, TODAY_STR } from './mockEvents';
+import { getDhakaDateString, isEventInPast } from '../domain/constants';
 import { auth, db } from '../services/firebaseClient';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
@@ -92,6 +93,15 @@ class EventRepository {
         this.fetchServerUpdates();
       }
     });
+
+    // Periodic sync from backend API for normal users and offline resilience
+    if (typeof window !== 'undefined') {
+      window.setInterval(() => {
+        if (!auth.currentUser) {
+          this.fetchServerUpdates();
+        }
+      }, 45000);
+    }
   }
 
   private bindFirestoreListeners() {
@@ -256,7 +266,8 @@ class EventRepository {
   }
 
   public getTodayEvents(): EventEntity[] {
-    return this.getApprovedEvents().filter((e) => e.eventDate === TODAY_STR);
+    const today = getDhakaDateString();
+    return this.getApprovedEvents().filter((e) => e.eventDate === today);
   }
 
   public getNextTodayEvent(): EventEntity | null {
@@ -270,12 +281,15 @@ class EventRepository {
   }
 
   public getUpcomingEvents(): EventEntity[] {
-    return this.getApprovedEvents().filter((e) => Boolean(e.eventDate) && e.eventDate! >= TODAY_STR);
+    const today = getDhakaDateString();
+    return this.getApprovedEvents().filter(
+      (e) => Boolean(e.eventDate) && e.eventDate! >= today && !isEventInPast(e.eventDate, e.endTime, e.startTime) && !e.isCompleted
+    );
   }
 
   public getPastEvents(): EventEntity[] {
     return this.getApprovedEvents().filter(
-      (e) => Boolean(e.eventDate) && (e.eventDate! < TODAY_STR || e.isCompleted)
+      (e) => Boolean(e.eventDate) && (isEventInPast(e.eventDate, e.endTime, e.startTime) || e.isCompleted)
     );
   }
 

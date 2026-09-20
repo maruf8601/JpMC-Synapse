@@ -8,6 +8,7 @@ import { getApps, initializeApp, cert, getApp, App } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { getAuth, Auth } from 'firebase-admin/auth';
+import crypto from 'crypto';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || 'sapient-pen-336609';
@@ -170,6 +171,198 @@ export async function getUserRoleAndActive(uid: string): Promise<{ role: 'admin'
 export async function isUserAuthorized(uid: string): Promise<boolean> {
   const docSnap = await adminDb.collection('authorizedUsers').doc(uid).get();
   return docSnap.exists && docSnap.data()?.active === true;
+}
+
+export interface UserSessionData {
+  sessionId: string;
+  tokenHash: string;
+  userId: string;
+  displayName: string;
+  role: 'user';
+  createdAt: string;
+  lastLoginAt: string;
+  active: boolean;
+  clientDeviceId?: string | null;
+}
+
+/**
+ * Creates a secure normal-user session in Firestore and returns session metadata.
+ * SECURITY: The access code is validated beforehand by the server endpoint against process.env.STAFF_ACCESS_CODE.
+ * The access code is NEVER passed here, never returned in responses, nor stored in database.
+ */
+export async function createUserSession(
+  name: string,
+  clientDeviceId?: string
+): Promise<{
+  success: boolean;
+  session?: { token: string; sessionId: string; expiresAt: string };
+  user?: UserAuthProfile;
+  customToken?: string | null;
+  error?: string;
+}> {
+  const trimmedName = (name || '').trim();
+
+  if (!trimmedName) {
+    return { success: false, error: 'NAME_REQUIRED' };
+  }
+
+  // Generate a deterministic user ID from normalized name so user profile history persists
+  const normalizedKey = trimmedName.toLowerCase().replace(/\s+/g, '_');
+  const userHash = crypto.createHash('sha256').update(normalizedKey).digest('hex').slice(0, 14);
+  const userId = `usr_${userHash}`;
+
+  // Generate cryptographically secure session token (only the hash is stored in Firestore)
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(sessionToken).digest('hex');
+  const sessionId = `sess_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+  const nowIso = new Date().toISOString();
+
+  // Store session in Firestore userSessions collection
+  const sessionDoc: UserSessionData = {
+    sessionId,
+    tokenHash,
+    userId,
+    displayName: trimmedName,
+    role: 'user',
+    createdAt: nowIso,
+    lastLoginAt: nowIso,
+    active: true,
+    clientDeviceId: clientDeviceId || null,
+  };
+
+  await adminDb.collection('userSessions').doc(sessionId).set(removeUndefinedFields(sessionDoc));
+
+  // Store / update user profile in authorizedUsers collection with role: 'user'
+  const userDocRef = adminDb.collection('authorizedUsers').doc(userId);
+  const userSnap = await userDocRef.get();
+  if (!userSnap.exists) {
+    await userDocRef.set({
+      uid: userId,
+      displayName: trimmedName,
+      role: 'user',
+      active: true,
+      authMethod: 'institutional_code',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  } else {
+    await userDocRef.set(
+      {
+        displayName: trimmedName,
+        role: 'user', // Normal user login ALWAYS strictly enforces role: 'user'
+        active: true,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+  }
+
+  // Attempt to mint Firebase custom token if credentials allow (for direct Firestore rules)
+  let customToken: string | null = null;
+  try {
+    customToken = await adminAuth.createCustomToken(userId, { role: 'user' });
+  } catch {
+    // Custom token is optional fallback; session token is primary
+  }
+
+  // Session valid for 90 days
+  const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+
+  return {
+    success: true,
+    session: {
+      token: sessionToken,
+      sessionId,
+      expiresAt,
+    },
+    user: {
+      uid: userId,
+      email: '',
+      displayName: trimmedName,
+      role: 'user',
+      active: true,
+    },
+    customToken,
+  };
+}
+
+/**
+ * Validates an existing normal user session token from device on auto-login
+ */
+export async function verifyUserSession(sessionToken: string): Promise<{
+  valid: boolean;
+  user?: UserAuthProfile;
+  customToken?: string | null;
+  error?: string;
+}> {
+  if (!sessionToken || typeof sessionToken !== 'string') {
+    return { valid: false, error: 'Missing session token' };
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(sessionToken.trim()).digest('hex');
+  const snap = await adminDb
+    .collection('userSessions')
+    .where('tokenHash', '==', tokenHash)
+    .where('active', '==', true)
+    .limit(1)
+    .get();
+
+  if (snap.empty) {
+    return { valid: false, error: 'Session not found or expired' };
+  }
+
+  const sessionDoc = snap.docs[0];
+  const sessionData = sessionDoc.data() as UserSessionData;
+
+  // Check if user is active in authorizedUsers
+  const authInfo = await getUserRoleAndActive(sessionData.userId);
+  if (authInfo && !authInfo.active) {
+    return { valid: false, error: 'User account is deactivated' };
+  }
+
+  // Touch lastLoginAt
+  const nowIso = new Date().toISOString();
+  sessionDoc.ref.update({ lastLoginAt: nowIso }).catch(() => {});
+
+  let customToken: string | null = null;
+  try {
+    customToken = await adminAuth.createCustomToken(sessionData.userId, { role: 'user' });
+  } catch {}
+
+  return {
+    valid: true,
+    user: {
+      uid: sessionData.userId,
+      email: '',
+      displayName: sessionData.displayName,
+      role: 'user',
+      active: true,
+    },
+    customToken,
+  };
+}
+
+/**
+ * Deactivates a normal user session on logout
+ */
+export async function invalidateUserSession(sessionToken: string): Promise<boolean> {
+  if (!sessionToken) return false;
+  try {
+    const tokenHash = crypto.createHash('sha256').update(sessionToken.trim()).digest('hex');
+    const snap = await adminDb
+      .collection('userSessions')
+      .where('tokenHash', '==', tokenHash)
+      .get();
+    const batch = adminDb.batch();
+    snap.docs.forEach((d) => {
+      batch.update(d.ref, { active: false, loggedOutAt: new Date().toISOString() });
+    });
+    await batch.commit();
+    return true;
+  } catch (err) {
+    console.warn('[Auth] Invalidate session warning:', err);
+    return false;
+  }
 }
 
 export interface DeviceRecord {

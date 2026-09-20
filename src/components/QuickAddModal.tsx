@@ -3,6 +3,8 @@ import { EventEntity, Language, Category, Priority, ReviewStatus } from '../doma
 import {
   CATEGORIES,
   getDhakaNow,
+  getDhakaDateString,
+  isEventInPast,
   formatBengaliDate,
   formatBengaliTime,
 } from '../domain/constants';
@@ -26,6 +28,9 @@ interface QuickAddModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAddEvent: (event: Omit<EventEntity, 'id' | 'createdAt' | 'updatedAt'>) => Promise<any> | void;
+  onUpdateEvent?: (event: EventEntity) => Promise<any> | void;
+  initialEvent?: EventEntity | null;
+  prefilledDate?: string | null;
   language: Language;
 }
 
@@ -33,6 +38,9 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   isOpen,
   onClose,
   onAddEvent,
+  onUpdateEvent,
+  initialEvent,
+  prefilledDate,
   language,
 }) => {
   const [activeMode, setActiveMode] = useState<'ai' | 'manual'>('manual');
@@ -43,8 +51,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Manual Form State
-  const now = getDhakaNow();
-  const defaultDate = now.toISOString().split('T')[0];
+  const defaultDate = getDhakaDateString();
 
   const [title, setTitle] = useState('');
   const [eventDate, setEventDate] = useState(defaultDate);
@@ -57,32 +64,55 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
   const [committee, setCommittee] = useState('');
   const [participants, setParticipants] = useState('');
   const [isAllDay, setIsAllDay] = useState(false);
-  // Smart Bengali Schedule Parser error state (must remain before any early return)
+  // Smart Bengali Schedule Parser error state
   const [extractionError, setExtractionError] = useState<string | null>(null);
 
-  // Reset form cleanly whenever modal opens
+  // Reset/populate form whenever modal opens or inputs change
   useEffect(() => {
     if (isOpen) {
-      setActiveMode('manual');
-      setTitle('');
-      const dhakaDate = getDhakaNow().toISOString().split('T')[0];
-      setEventDate(dhakaDate);
-      setStartTime('10:00');
-      setEndTime('');
-      setVenue('');
-      setDescription('');
-      setCategory('সভা');
-      setPriority('normal');
-      setCommittee('');
-      setParticipants('');
-      setIsAllDay(false);
-      setNlInput('');
-      setParsedPreview(null);
-      setExtractionError(null);
+      if (initialEvent) {
+        setActiveMode('manual');
+        setTitle(initialEvent.title || '');
+        setEventDate(initialEvent.eventDate || defaultDate);
+        setStartTime(initialEvent.startTime || '10:00');
+        setEndTime(initialEvent.endTime || '');
+        setVenue(initialEvent.venue || '');
+        setDescription(initialEvent.description || '');
+        setCategory(initialEvent.category || 'সভা');
+        setPriority(initialEvent.priority || 'normal');
+        setCommittee(initialEvent.committee || '');
+        setParticipants(initialEvent.participants || '');
+        setIsAllDay(!!initialEvent.isAllDay);
+        setNlInput('');
+        setParsedPreview(null);
+        setExtractionError(null);
+        setSaveError(null);
+      } else {
+        setActiveMode('manual');
+        setTitle('');
+        const dhakaDate = prefilledDate || getDhakaDateString();
+        setEventDate(dhakaDate);
+        setStartTime('10:00');
+        setEndTime('');
+        setVenue('');
+        setDescription('');
+        setCategory('সভা');
+        setPriority('normal');
+        setCommittee('');
+        setParticipants('');
+        setIsAllDay(false);
+        setNlInput('');
+        setParsedPreview(null);
+        setExtractionError(null);
+        setSaveError(null);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialEvent, prefilledDate]);
 
   if (!isOpen) return null;
+
+  // Real-time detection if current eventDate/time is in the past
+  const isPastEvent = isEventInPast(eventDate, endTime, startTime);
 
   // Sample prompt test phrases from specification
   const testPhrases = [
@@ -98,103 +128,76 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     setExtractionError(null);
 
     try {
-      const res = await apiFetch('/api/extract-events', {
+      const response = await apiFetch('/api/parse-schedule', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          rawText: text,
-          timezone: 'Asia/Dhaka (UTC+6)',
+          text,
+          currentDate: getDhakaDateString(),
+          language,
         }),
       });
 
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || 'Gemini extraction failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}: Failed to parse schedule`);
       }
 
-      const data = await res.json();
-      if (!data.events || data.events.length === 0) {
-        setExtractionError('পাঠ্যটি থেকে কোনো নির্দিষ্ট সূচি চিহ্নিত করা যায়নি। অনুগ্রহ করে তারিখ ও সময় উল্লেখ করুন।');
-        setParsedPreview(null);
-        return;
-      }
-
-      const ev = data.events[0];
-      const hasDate = Boolean(ev.date);
-      const hasStartTime = Boolean(ev.startTime);
-      const hasVenue = Boolean(ev.venue);
-      const hasValidConfidence =
-        typeof ev.confidence === 'number' && !isNaN(ev.confidence) && ev.confidence >= 0 && ev.confidence <= 1;
-
-      const ambiguities: string[] = Array.isArray(ev.ambiguities) ? [...ev.ambiguities] : [];
-
-      let confidence: number | null = null;
-      if (hasValidConfidence) {
-        confidence = ev.confidence;
-      } else {
-        confidence = 0;
-        ambiguities.push('AI confidence score পাওয়া যায়নি।');
-      }
-
-      if (!hasDate) ambiguities.push('তারিখ অনুপস্থিত (Date missing)');
-      if (!hasStartTime) ambiguities.push('সময় অনুপস্থিত (Time missing)');
-      if (!hasVenue) ambiguities.push('ভেন্যু অনুপস্থিত (Venue missing)');
-
-      // Rule 10: Auto-approved only when valid date, startTime, confidence >= 0.90, and no critical ambiguities
-      const isMissingRequired = !hasDate || !hasStartTime;
-      const isLowConfidence = confidence < 0.90;
-      const reviewStatus: ReviewStatus = isMissingRequired || isLowConfidence || ambiguities.length > 0
-        ? 'needs_review'
-        : 'auto_approved';
-
-      const rawTitle = typeof ev.title === 'string' ? ev.title.trim() : '';
-      const hasMeaningfulTitle = rawTitle.length > 0 && !/^[\s-_.,]*$/.test(rawTitle);
-      if (!hasMeaningfulTitle) {
-        ambiguities.push('ইভেন্টের শিরোনাম নির্ধারণ প্রয়োজন।');
-      }
-
-      const rawCategory = typeof ev.category === 'string' ? ev.category.trim() : '';
-      const category: Category = (rawCategory && ['সভা', 'একাডেমিক', 'পরীক্ষা', 'সেমিনার', 'ওয়ার্কশপ', 'প্রশিক্ষণ', 'প্রশাসনিক', 'জাতীয় দিবস', 'ক্রয়/টেন্ডার', 'ছাত্র বিষয়ক', 'ব্যক্তিগত', 'অন্যান্য'].includes(rawCategory))
-        ? (rawCategory as Category)
-        : 'অন্যান্য';
-
-      setParsedPreview({
-        title: hasMeaningfulTitle ? rawTitle : 'শিরোনাম নির্ধারণ প্রয়োজন',
-        eventDate: ev.date || null,
-        startTime: ev.startTime || null,
-        endTime: ev.endTime || null,
-        venue: ev.venue || null,
-        category,
-        priority: ev.priority || 'normal',
-        description: ev.description || text,
-        confidence,
-        reviewStatus,
-        source: 'AI Extracted',
-        ambiguities,
-      });
+      const parsed = await response.json();
+      setParsedPreview(parsed);
     } catch (err: any) {
-      console.error('[QuickAddModal] AI parsing error:', err);
-      setExtractionError(err?.message || 'সার্ভার থেকে এআই বিশ্লেষণ ব্যর্থ হয়েছে।');
+      console.warn('AI Parsing error, using local fallback:', err);
+      setExtractionError(err?.message || 'AI parsing error');
+
+      // Local heuristic fallback parser
+      const lower = text.toLowerCase();
+      let matchedCategory: Category = 'সভা';
+      if (lower.includes('ক্লাস') || lower.includes('class') || lower.includes('লেকচার')) {
+        matchedCategory = 'একাডেমিক';
+      } else if (lower.includes('পরীক্ষা') || lower.includes('exam')) {
+        matchedCategory = 'পরীক্ষা';
+      } else if (lower.includes('সেমিনার') || lower.includes('কনফারেন্স') || lower.includes('seminar')) {
+        matchedCategory = 'সেমিনার';
+      } else if (lower.includes('ছুটি') || lower.includes('holiday')) {
+        matchedCategory = 'অন্যান্য';
+      }
+
+      const fallbackPreview: Partial<EventEntity> = {
+        title: text.length > 50 ? text.substring(0, 50) + '...' : text,
+        eventDate: getDhakaDateString(),
+        startTime: '10:00',
+        endTime: null,
+        venue: text.includes('কক্ষ') || text.includes('Room') ? 'শিক্ষক কক্ষ' : null,
+        category: matchedCategory,
+        priority: 'normal',
+        description: text,
+        source: 'Manual',
+        confidence: 0.5,
+        reviewStatus: 'needs_review',
+        ambiguities: [
+          language === 'bn'
+            ? 'সার্ভার সংযোগ না থাকায় খসড়া তৈরি হয়েছে, সময় ও তারিখ মিলিয়ে নিন।'
+            : 'Generated from local fallback, please verify date and time.',
+        ],
+      };
+      setParsedPreview(fallbackPreview);
     } finally {
       setIsAiParsing(false);
     }
   };
 
   const handleSaveParsedPreview = async () => {
-    if (!parsedPreview || isSaving) return;
+    if (!parsedPreview) return;
 
-    const hasValidDate = Boolean(parsedPreview.eventDate);
-    const hasValidStartTime = Boolean(parsedPreview.startTime);
-    const isComplete = hasValidDate && hasValidStartTime;
-    const confidence = typeof parsedPreview.confidence === 'number' ? parsedPreview.confidence : 0;
-    const hasAmbiguities = Boolean(parsedPreview.ambiguities && parsedPreview.ambiguities.length > 0);
+    const hasDateAndTime = !!(parsedPreview.eventDate && parsedPreview.startTime);
+    const confidence = typeof parsedPreview.confidence === 'number' ? parsedPreview.confidence : 0.8;
+    const reviewStatus: ReviewStatus = hasDateAndTime && confidence >= 0.75 ? 'auto_approved' : 'needs_review';
 
-    const reviewStatus: ReviewStatus = (isComplete && confidence >= 0.90 && !hasAmbiguities)
-      ? 'auto_approved'
-      : 'needs_review';
+    const isPast = isEventInPast(parsedPreview.eventDate, parsedPreview.endTime, parsedPreview.startTime);
 
-    // Time-specific reminders must remain disabled until valid date + startTime exist.
-    const reminders = isComplete && reviewStatus === 'auto_approved'
+    const reminders = (hasDateAndTime && !isPast)
       ? [
           {
             id: `rem-${Date.now()}`,
@@ -233,15 +236,14 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
       syncStatus: 'synced' as const,
       ambiguities: parsedPreview.ambiguities,
       reminders,
+      isCompleted: isPast ? true : false,
     };
 
-    console.log('[QuickAdd] Confirmed AI event saving:', payload);
     try {
       await onAddEvent(payload);
-      console.log('[QuickAdd] Firestore write succeeded for AI event');
       onClose();
     } catch (err: any) {
-      console.error('[QuickAdd] Firestore write failed for AI event:', err);
+      console.error('[QuickAdd] Save failed:', err);
       setSaveError(
         err?.message ||
           (language === 'bn'
@@ -272,6 +274,46 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
     setIsSaving(true);
     setSaveError(null);
 
+    const isPast = isEventInPast(eventDate, endTime, startTime);
+
+    if (initialEvent && onUpdateEvent) {
+      const updatedEvent: EventEntity = {
+        ...initialEvent,
+        title: title.trim(),
+        eventDate: eventDate || null,
+        startTime: isAllDay ? null : (startTime && startTime.trim() ? startTime.trim() : null),
+        endTime: isAllDay ? null : (endTime && endTime.trim() ? endTime.trim() : null),
+        venue: venue.trim() ? venue.trim() : null,
+        category,
+        priority,
+        description: description.trim() || '',
+        committee: committee.trim() ? committee.trim() : undefined,
+        participants: participants.trim() ? participants.trim() : undefined,
+        isAllDay,
+        isCompleted: isPast ? true : initialEvent.isCompleted,
+        reminders: isPast
+          ? []
+          : (initialEvent.reminders || []).map((r) => ({ ...r, enabled: true })),
+        updatedAt: new Date().toISOString(),
+      };
+
+      try {
+        await onUpdateEvent(updatedEvent);
+        onClose();
+      } catch (err: any) {
+        console.error('[QuickAdd] Update failed:', err);
+        setSaveError(
+          err?.message ||
+            (language === 'bn'
+              ? 'কর্মসূচি আপডেট করা সম্ভব হয়নি।'
+              : 'Failed to update event.')
+        );
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
+
     const payload = {
       title: title.trim(),
       eventDate: eventDate || null,
@@ -288,38 +330,39 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
       confidence: null,
       reviewStatus: 'auto_approved' as const,
       syncStatus: 'synced' as const,
-      reminders: [
-        {
-          id: `rem-${Date.now()}`,
-          eventId: '',
-          reminderType: 'notification' as const,
-          minutesBefore: 120,
-          scheduledAt: '',
-          enabled: true,
-        },
-        {
-          id: `rem-${Date.now() + 1}`,
-          eventId: '',
-          reminderType: 'notification' as const,
-          minutesBefore: 30,
-          scheduledAt: '',
-          enabled: true,
-        },
-      ],
+      isCompleted: isPast ? true : false,
+      reminders: isPast
+        ? []
+        : [
+            {
+              id: `rem-${Date.now()}`,
+              eventId: '',
+              reminderType: 'notification' as const,
+              minutesBefore: 120,
+              scheduledAt: '',
+              enabled: true,
+            },
+            {
+              id: `rem-${Date.now() + 1}`,
+              eventId: '',
+              reminderType: 'notification' as const,
+              minutesBefore: 30,
+              scheduledAt: '',
+              enabled: true,
+            },
+          ],
     };
 
-    console.log('[QuickAdd] Confirmed manual event saving:', payload);
     try {
       await onAddEvent(payload);
-      console.log('[QuickAdd] Firestore write succeeded for manual event');
       onClose();
     } catch (err: any) {
-      console.error('[QuickAdd] Firestore write failed for manual event:', err);
+      console.error('[QuickAdd] Firestore write failed:', err);
       setSaveError(
         err?.message ||
           (language === 'bn'
             ? 'ডাটাবেজে সংরক্ষণ ব্যর্থ হয়েছে। নেটওয়ার্ক ও অনুমতি পরীক্ষা করুন।'
-            : 'Failed to persist event to Firestore database. Please retry.')
+            : 'Failed to persist event to database. Please retry.')
       );
     } finally {
       setIsSaving(false);
@@ -341,7 +384,13 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
         <div className="bg-[#006A60] text-white px-5 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-bold tracking-tight">
-              {language === 'bn' ? 'নতুন কর্মসূচি যোগ করুন' : 'Add New Schedule'}
+              {initialEvent
+                ? language === 'bn'
+                  ? 'কর্মসূচি সম্পাদনা করুন'
+                  : 'Edit Event Schedule'
+                : language === 'bn'
+                ? 'নতুন কর্মসূচি যোগ করুন'
+                : 'Add New Schedule'}
             </h2>
             <span className="text-[10px] bg-teal-800 text-teal-200 px-2 py-0.5 rounded-full font-semibold">
               JpMC
@@ -349,38 +398,40 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-full hover:bg-teal-700 text-teal-100 transition"
+            className="p-1 rounded-full hover:bg-teal-700 text-teal-100 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Mode Selector Tabs (AI Natural Language vs Manual Form) */}
-        <div className="flex border-b border-slate-200 bg-slate-50 text-xs">
-          <button
-            onClick={() => setActiveMode('ai')}
-            className={`flex-1 py-3 px-4 font-bold flex items-center justify-center gap-2 transition ${
-              activeMode === 'ai'
-                ? 'text-[#006A60] border-b-2 border-[#006A60] bg-white'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <span>{language === 'bn' ? 'AI দিয়ে যোগ করুন (Natural)' : 'AI Natural Add'}</span>
-          </button>
+        {!initialEvent && (
+          <div className="flex border-b border-slate-200 bg-slate-50 text-xs">
+            <button
+              onClick={() => setActiveMode('ai')}
+              className={`flex-1 py-3 px-4 font-bold flex items-center justify-center gap-2 transition cursor-pointer ${
+                activeMode === 'ai'
+                  ? 'text-[#006A60] border-b-2 border-[#006A60] bg-white'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-amber-500" />
+              <span>{language === 'bn' ? 'AI দিয়ে যোগ করুন (Natural)' : 'AI Natural Add'}</span>
+            </button>
 
-          <button
-            onClick={() => setActiveMode('manual')}
-            className={`flex-1 py-3 px-4 font-bold flex items-center justify-center gap-2 transition ${
-              activeMode === 'manual'
-                ? 'text-[#006A60] border-b-2 border-[#006A60] bg-white'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FileEdit className="w-4 h-4 text-teal-600" />
-            <span>{language === 'bn' ? 'ম্যানুয়াল ফরম (Detailed)' : 'Manual Form'}</span>
-          </button>
-        </div>
+            <button
+              onClick={() => setActiveMode('manual')}
+              className={`flex-1 py-3 px-4 font-bold flex items-center justify-center gap-2 transition cursor-pointer ${
+                activeMode === 'manual'
+                  ? 'text-[#006A60] border-b-2 border-[#006A60] bg-white'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <FileEdit className="w-4 h-4 text-teal-600" />
+              <span>{language === 'bn' ? 'ম্যানুয়াল ফরম (Detailed)' : 'Manual Form'}</span>
+            </button>
+          </div>
+        )}
 
         {/* Content Body */}
         <div className="p-5 overflow-y-auto space-y-4">
@@ -391,14 +442,14 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
               <button
                 type="button"
                 onClick={() => setSaveError(null)}
-                className="text-rose-500 hover:text-rose-800 text-xs ml-1"
+                className="text-rose-500 hover:text-rose-800 text-xs ml-1 cursor-pointer"
               >
                 ✕
               </button>
             </div>
           )}
 
-          {activeMode === 'ai' ? (
+          {activeMode === 'ai' && !initialEvent ? (
             /* AI Natural Language Add Screen */
             <div className="space-y-3.5">
               <div className="bg-teal-50/70 rounded-2xl p-3.5 border border-teal-200 text-xs text-teal-900">
@@ -412,8 +463,8 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                 </p>
                 <p className="text-[11px] text-teal-700 leading-relaxed">
                   {language === 'bn'
-                    ? 'উদাহরণ: "আগামী বৃহস্পতিবার সকাল সাড়ে ৯টায় শিক্ষক কক্ষে মিটিং"'
-                    : 'e.g. "Meeting in Faculty Room tomorrow at 10 AM"'}
+                    ? 'অতীত মিটিংও লিখতে পারেন, যেমন: "গত ১৫ সেপ্টেম্বর সকাল ১০টায় একাডেমিক কাউন্সিল সভা অনুষ্ঠিত হয়"'
+                    : 'Historical events allowed, e.g. "Academic Council Meeting held on 15 September at 10 AM"'}
                 </p>
               </div>
 
@@ -436,7 +487,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                   <button
                     onClick={() => parseBengaliNaturalLanguage(nlInput)}
                     disabled={!nlInput.trim() || isAiParsing}
-                    className="flex items-center gap-1.5 bg-[#006A60] hover:bg-teal-700 disabled:opacity-50 text-white font-semibold text-xs px-4 py-2 rounded-xl transition shadow-xs"
+                    className="flex items-center gap-1.5 bg-[#006A60] hover:bg-teal-700 disabled:opacity-50 text-white font-semibold text-xs px-4 py-2 rounded-xl transition shadow-xs cursor-pointer"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-amber-300" />
                     <span>
@@ -449,24 +500,16 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                         : 'Parse with AI'}
                     </span>
                   </button>
-
-                  <span className="text-[11px] text-slate-400">Asia/Dhaka UTC+6</span>
                 </div>
-
-                {extractionError && (
-                  <div className="mt-2 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                    <span>{extractionError}</span>
-                  </div>
-                )}
               </div>
 
-              {/* Quick Prompt Test Case Chips */}
-              <div className="pt-2">
-                <span className="text-[11px] font-bold text-slate-500 block mb-1.5">
-                  {language === 'bn' ? 'নমুনা টেস্ট কেস (ক্লিক করে পরীক্ষা করুন):' : 'Sample Test Prompts:'}
-                </span>
-                <div className="flex flex-col gap-1.5">
+              {/* Quick test buttons */}
+              <div className="space-y-1.5 pt-1">
+                <p className="text-[11px] font-semibold text-slate-500 flex items-center gap-1">
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>{language === 'bn' ? 'বাছাইকৃত নমুনা বাক্য (ক্লিক করুন):' : 'Sample Prompts:'}</span>
+                </p>
+                <div className="grid grid-cols-1 gap-1.5">
                   {testPhrases.map((phrase, idx) => (
                     <button
                       key={idx}
@@ -474,7 +517,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                         setNlInput(phrase);
                         parseBengaliNaturalLanguage(phrase);
                       }}
-                      className="text-left text-xs bg-slate-50 hover:bg-slate-100 text-slate-700 p-2 rounded-lg border border-slate-200 transition"
+                      className="text-left text-xs bg-slate-50 hover:bg-slate-100 text-slate-700 p-2 rounded-lg border border-slate-200 transition cursor-pointer"
                     >
                       "{phrase}"
                     </button>
@@ -522,21 +565,6 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                           ? 'Confidence পাওয়া যায়নি'
                           : 'AI Confidence: N/A'}
                       </span>
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          parsedPreview.reviewStatus === 'needs_review'
-                            ? 'bg-amber-200 text-amber-900'
-                            : 'bg-emerald-200 text-emerald-900'
-                        }`}
-                      >
-                        {parsedPreview.reviewStatus === 'needs_review'
-                          ? language === 'bn'
-                            ? 'যাচাই প্রয়োজন'
-                            : 'Needs Review'
-                          : language === 'bn'
-                          ? 'অনুমোদিত'
-                          : 'Approved'}
-                      </span>
                     </div>
                   </div>
 
@@ -548,27 +576,19 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500">{language === 'bn' ? 'তারিখ: ' : 'Date: '}</span>
-                      <span className={`font-semibold ${parsedPreview.eventDate ? 'text-[#006A60]' : 'text-amber-700'}`}>
-                        {parsedPreview.eventDate
-                          ? language === 'bn'
-                            ? formatBengaliDate(parsedPreview.eventDate)
-                            : parsedPreview.eventDate
-                          : language === 'bn'
-                          ? 'উল্লেখ নেই'
-                          : 'Unspecified'}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">{language === 'bn' ? 'শুরুর সময়: ' : 'Start Time: '}</span>
-                      <span className={`font-semibold ${parsedPreview.startTime ? 'text-[#006A60]' : 'text-amber-700'}`}>
-                        {parsedPreview.startTime
-                          ? language === 'bn'
-                            ? formatBengaliTime(parsedPreview.startTime)
-                            : parsedPreview.startTime
-                          : language === 'bn'
-                          ? 'উল্লেখ নেই'
-                          : 'Unspecified'}
+                      <span className="text-slate-500">{language === 'bn' ? 'তারিখ ও সময়: ' : 'Date & Time: '}</span>
+                      <span className="font-medium">
+                        {parsedPreview.eventDate ? (
+                          language === 'bn' ? formatBengaliDate(parsedPreview.eventDate) : parsedPreview.eventDate
+                        ) : (
+                          language === 'bn' ? 'অনুপস্থিত' : 'Missing'
+                        )}{' '}
+                        •{' '}
+                        {parsedPreview.startTime ? (
+                          language === 'bn' ? formatBengaliTime(parsedPreview.startTime) : parsedPreview.startTime
+                        ) : (
+                          language === 'bn' ? 'অনুপস্থিত' : 'Missing'
+                        )}
                       </span>
                     </div>
                     <div>
@@ -577,34 +597,18 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                         {parsedPreview.venue || (language === 'bn' ? 'উল্লেখ নেই' : 'Unspecified')}
                       </span>
                     </div>
-                    <div>
-                      <span className="text-slate-500">{language === 'bn' ? 'ক্যাটাগরি: ' : 'Category: '}</span>
-                      <span className="font-semibold bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                        {parsedPreview.category || 'অন্যান্য'}
-                      </span>
-                    </div>
                   </div>
 
-                  {parsedPreview.ambiguities && parsedPreview.ambiguities.length > 0 && (
-                    <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 space-y-1">
-                      <span className="font-bold flex items-center gap-1">
-                        <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
-                        <span>{language === 'bn' ? 'অস্পষ্টতা / অনুপস্থিত তথ্য:' : 'Ambiguities / Missing Info:'}</span>
+                  {/* Past event badge in AI preview */}
+                  {isEventInPast(parsedPreview.eventDate, parsedPreview.endTime, parsedPreview.startTime) && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-amber-900 bg-amber-100/70 border border-amber-300 px-2.5 py-1.5 rounded-xl">
+                      <Clock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                      <span>
+                        {language === 'bn'
+                          ? 'ঐতিহাসিক / সম্পন্ন সূচি (স্মার্ট রিমাইন্ডার বন্ধ থাকবে)'
+                          : 'Historical / Completed Event (Reminders will be disabled)'}
                       </span>
-                      <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-800">
-                        {parsedPreview.ambiguities.map((amb, idx) => (
-                          <li key={idx}>{amb}</li>
-                        ))}
-                      </ul>
                     </div>
-                  )}
-
-                  {(!parsedPreview.eventDate || !parsedPreview.startTime) && (
-                    <p className="text-[11px] text-amber-800 bg-amber-100/60 p-2 rounded-lg leading-relaxed">
-                      {language === 'bn'
-                        ? '⚠️ তারিখ বা শুরুর সময় অনুপস্থিত থাকায় স্বয়ংক্রিয় রিমাইন্ডার বন্ধ থাকবে। রিভিউ সেন্টারে অথবা সরাসরি ম্যানুয়াল ফর্মে তথ্য পূরণ করে নিন।'
-                        : '⚠️ Time-specific reminders remain disabled until valid date and time are provided.'}
-                    </p>
                   )}
 
                   <div className="flex flex-col sm:flex-row gap-2 pt-1">
@@ -612,7 +616,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                       type="button"
                       disabled={isSaving}
                       onClick={handleTransferPreviewToManual}
-                      className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      className="flex-1 py-2 px-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                     >
                       <Sparkles className="w-3.5 h-3.5 text-teal-600 shrink-0" />
                       <span>{language === 'bn' ? 'নিজে তথ্য পূরণ / সম্পাদন' : 'Edit in Form'}</span>
@@ -631,13 +635,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                       ) : (
                         <>
                           <span>
-                            {parsedPreview.reviewStatus === 'needs_review'
-                              ? language === 'bn'
-                                ? 'রিভিউ সেন্টারে সংরক্ষণ'
-                                : 'Save for Review'
-                              : language === 'bn'
-                              ? 'কর্মসূচি সংরক্ষণ করুন'
-                              : 'Save Schedule'}
+                            {language === 'bn' ? 'কর্মসূচি সংরক্ষণ করুন' : 'Save Schedule'}
                           </span>
                           <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                         </>
@@ -650,6 +648,23 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
           ) : (
             /* Manual Form */
             <form onSubmit={handleManualSubmit} className="space-y-3 text-xs">
+              {/* Informative Historical Badge when date/time is in the past */}
+              {isPastEvent && (
+                <div className="flex items-center gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs">
+                  <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">
+                      {language === 'bn' ? 'ঐতিহাসিক / সম্পন্ন কর্মসূচি:' : 'Historical / Past Meeting:'}
+                    </span>{' '}
+                    <span className="text-[11px] text-amber-800">
+                      {language === 'bn'
+                        ? 'এই সূচিটি অতীত সময়ের। এটি সম্পন্ন হিসেবে সংরক্ষিত হবে এবং কোনো ভবিষ্যৎ রিমাইন্ডার শিডিউল হবে না।'
+                        : 'This date/time has already passed. It will be recorded as completed with reminders disabled.'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">
                   {language === 'bn' ? 'কর্মসূচির শিরোনাম *' : 'Event Title *'}
@@ -669,6 +684,7 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                   <label className="font-semibold text-slate-700 block mb-1">
                     {language === 'bn' ? 'তারিখ *' : 'Date *'}
                   </label>
+                  {/* Notice: No min attribute, allows any past or future date */}
                   <input
                     type="date"
                     required
@@ -733,9 +749,9 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                   id="all-day-toggle"
                   checked={isAllDay}
                   onChange={(e) => setIsAllDay(e.target.checked)}
-                  className="rounded text-teal-600 focus:ring-teal-500 w-4 h-4"
+                  className="rounded text-teal-600 focus:ring-teal-500 w-4 h-4 cursor-pointer"
                 />
-                <label htmlFor="all-day-toggle" className="text-slate-700 font-medium">
+                <label htmlFor="all-day-toggle" className="text-slate-700 font-medium cursor-pointer">
                   {language === 'bn' ? 'সারাদিনব্যাপী কর্মসূচি (All-day event)' : 'All-day event'}
                 </label>
               </div>
@@ -785,6 +801,19 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
 
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">
+                  {language === 'bn' ? 'অংশগ্রহণকারী (ঐচ্ছিক)' : 'Participants (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={participants}
+                  onChange={(e) => setParticipants(e.target.value)}
+                  placeholder={language === 'bn' ? 'সকল বিভাগীয় প্রধান ও ফ্যাকাল্টি সদস্য' : 'All Department Heads'}
+                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">
                   {language === 'bn' ? 'বিবরণ ও আলোচ্যসূচি' : 'Description'}
                 </label>
                 <textarea
@@ -808,7 +837,15 @@ export const QuickAddModal: React.FC<QuickAddModalProps> = ({
                       <span>{language === 'bn' ? 'ডাটাবেজে সংরক্ষণ হচ্ছে...' : 'Saving to Database...'}</span>
                     </>
                   ) : (
-                    <span>{language === 'bn' ? 'কর্মসূচি সংরক্ষণ করুন' : 'Save Event'}</span>
+                    <span>
+                      {initialEvent
+                        ? language === 'bn'
+                          ? 'পরিবর্তন সংরক্ষণ করুন'
+                          : 'Save Changes'
+                        : language === 'bn'
+                        ? 'কর্মসূচি সংরক্ষণ করুন'
+                        : 'Save Event'}
+                    </span>
                   )}
                 </button>
               </div>

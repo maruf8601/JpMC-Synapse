@@ -13,6 +13,9 @@ import {
   ExternalLink,
   FileText,
   CheckCircle2,
+  KeyRound,
+  CalendarX2,
+  HardDrive,
 } from 'lucide-react';
 import jpmcLogo from '../assets/jpmc-logo.png';
 
@@ -101,8 +104,8 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
           </h1>
           <p className="text-sm text-slate-600 leading-relaxed max-w-3xl">
             This Privacy Policy outlines how <strong>JpMC Synapse</strong>, developed for{' '}
-            <strong>Jamalpur Medical College</strong>, handles information when you use the
-            application. We are committed to transparency and the responsible management of your data.
+            <strong>Jamalpur Medical College</strong>, handles user authentication, session data, and
+            integrations. We are committed to transparency and the responsible management of institutional data.
           </p>
 
           <div className="pt-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-500 border-t border-slate-100">
@@ -122,39 +125,51 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
         </div>
 
         {/* Quick Summary Banner */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-start gap-3">
             <div className="w-8 h-8 rounded-xl bg-teal-50 text-[#006A60] flex items-center justify-center shrink-0 mt-0.5">
+              <KeyRound className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-900">Faculty & Staff Login</h3>
+              <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                Normal users log in with Name & Institutional Code. No Google account is required or collected.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-start gap-3">
+            <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0 mt-0.5">
               <UserCheck className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-900">Google Sign-In</h3>
+              <h3 className="text-xs font-bold text-slate-900">Admin Google Sign-In</h3>
               <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                Used solely to authenticate authorized college staff and faculty members.
+                Google Sign-In is exclusively used by designated institutional administrators.
               </p>
             </div>
           </div>
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-start gap-3">
-            <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
-              <CheckCircle2 className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-700 flex items-center justify-center shrink-0 mt-0.5">
+              <CalendarX2 className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-900">No Data Selling</h3>
+              <h3 className="text-xs font-bold text-slate-900">Google Calendar Not Used</h3>
               <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                We never sell or rent user data, nor do we use it for advertising.
+                The app uses its own internal schedule engine; it never accesses your Google Calendar.
               </p>
             </div>
           </div>
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-start gap-3">
-            <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center shrink-0 mt-0.5">
-              <Building2 className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center shrink-0 mt-0.5">
+              <HardDrive className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-900">Institutional Purpose</h3>
+              <h3 className="text-xs font-bold text-slate-900">Google Drive Backup</h3>
               <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                Operated strictly for institutional schedules and academic notifications.
+                Drive access is strictly optional and only used when an admin initiates backup or export.
               </p>
             </div>
           </div>
@@ -168,23 +183,41 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 1
               </span>
-              <h2 className="text-base font-bold text-slate-900">Information We Collect</h2>
+              <h2 className="text-base font-bold text-slate-900">Authentication & Information We Collect</h2>
             </div>
-            <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
+            <div className="text-sm text-slate-600 leading-relaxed space-y-3 pl-8.5">
               <p>
-                JpMC Synapse may receive basic Google Account information when a user chooses to sign in
-                using Google Sign-In. This information includes:
+                JpMC Synapse utilizes a strict dual-tier authentication architecture:
               </p>
-              <ul className="list-disc list-inside space-y-1 text-slate-700 pl-1">
-                <li>Your full name</li>
-                <li>Your email address</li>
-                <li>Your profile picture URL</li>
-                <li>Your unique Google account identifier</li>
-              </ul>
-              <p>
-                This information is gathered strictly as necessary to authenticate your identity and
-                determine authorized administrative or faculty roles within the application.
-              </p>
+              
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
+                <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                  <KeyRound className="w-4 h-4 text-[#006A60]" />
+                  <span>A. Normal Users (Faculty, Doctors, Staff)</span>
+                </h4>
+                <p className="text-xs text-slate-600">
+                  Normal users authenticate manually the first time by providing their <strong>Full Name</strong> and the <strong>Institutional Secret Access Code</strong>.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-xs text-slate-600 pl-1">
+                  <li><strong>No Google Account Required:</strong> Regular faculty and staff do NOT sign in with Google.</li>
+                  <li><strong>Code Protection:</strong> The institutional secret code is checked server-side using cryptographic timing-safe comparisons. The code itself is never stored on your device or in localStorage.</li>
+                  <li><strong>Persistent Session:</strong> Upon first validation, a secure, pseudorandom session token is generated and stored locally so you remain logged in across page refreshes and app re-opens.</li>
+                </ul>
+              </div>
+
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
+                <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                  <UserCheck className="w-4 h-4 text-indigo-700" />
+                  <span>B. Institutional Administrators (Google Sign-In)</span>
+                </h4>
+                <p className="text-xs text-slate-600">
+                  Google Sign-In is reserved <strong>exclusively for authorized administrators</strong> who manage schedules, Telegram notices, and system configuration.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-xs text-slate-600 pl-1">
+                  <li>Minimum identity scopes only: <code>openid</code>, <code>email</code>, and <code>profile</code>.</li>
+                  <li>After authentication, the email is strictly verified against the authorized administrator whitelist. Unauthorized Google accounts are rejected and signed out immediately.</li>
+                </ul>
+              </div>
             </div>
           </section>
 
@@ -194,17 +227,28 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 2
               </span>
-              <h2 className="text-base font-bold text-slate-900">How Information Is Used</h2>
+              <h2 className="text-base font-bold text-slate-900">Third-Party Google Services: Drive and Calendar</h2>
             </div>
-            <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
-              <p>The information collected is used exclusively for the following purposes:</p>
-              <ul className="list-disc list-inside space-y-1 text-slate-700 pl-1">
-                <li>Authenticating user identity and verifying permission levels</li>
-                <li>Identifying authorized users and distinguishing administrative from standard accounts</li>
-                <li>Providing core application functionality (schedule viewing, calendar synchronization, and push notifications)</li>
-                <li>Maintaining secure account and session state across user devices</li>
-                <li>Ensuring security, integrity, and administrative management of JpMC Synapse</li>
-              </ul>
+            <div className="text-sm text-slate-600 leading-relaxed space-y-3 pl-8.5">
+              <div className="p-3.5 bg-amber-50/70 border border-amber-200/80 rounded-xl space-y-1.5 text-xs text-slate-700">
+                <p className="font-bold text-amber-900 flex items-center gap-1.5">
+                  <CalendarX2 className="w-4 h-4 text-rose-600" />
+                  <span>Google Calendar: Completely Disconnected</span>
+                </p>
+                <p>
+                  JpMC Synapse maintains its own internal Firestore-based calendar and schedule engine. The application does <strong>not</strong> request any Google Calendar OAuth permissions (such as <code>https://www.googleapis.com/auth/calendar</code> or <code>calendar.events</code>) and never interacts with your personal Google Calendar.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-teal-50/70 border border-teal-200/80 rounded-xl space-y-1.5 text-xs text-slate-700">
+                <p className="font-bold text-teal-900 flex items-center gap-1.5">
+                  <HardDrive className="w-4 h-4 text-[#006A60]" />
+                  <span>Google Drive: Administrator Backup Only</span>
+                </p>
+                <p>
+                  Google Drive authorization (<code>https://www.googleapis.com/auth/drive.file</code>) is <strong>never</strong> requested during initial login. Drive access is requested via incremental authorization <em>only</em> when an authorized administrator explicitly connects or triggers the Google Drive Cloud Backup & Export feature. Drive files created by JpMC Synapse are limited exclusively to backup archives created by the app.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -214,16 +258,17 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 3
               </span>
-              <h2 className="text-base font-bold text-slate-900">Google User Data</h2>
+              <h2 className="text-base font-bold text-slate-900">How Information Is Used</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
-              <p>
-                Google user information obtained through Google Sign-In is used only to provide
-                authentication and application functionality.
-              </p>
-              <p className="p-3.5 bg-teal-50/70 border border-teal-200/80 rounded-xl text-slate-800 font-medium">
-                JpMC Synapse does not sell Google user data or use it for advertising. We do not use Google user data for commercial profiling, targeted marketing, or any purpose unrelated to the institutional schedule management system.
-              </p>
+              <p>The information collected is used exclusively for the following purposes:</p>
+              <ul className="list-disc list-inside space-y-1 text-slate-700 pl-1 text-xs">
+                <li>Authenticating user identity and verifying permission levels (Admin vs Faculty/Staff)</li>
+                <li>Displaying institutional schedules, committee meetings, academic events, and notices</li>
+                <li>Delivering timely browser and PWA push notifications for upcoming meetings</li>
+                <li>Maintaining secure session persistence so faculty do not need to repeatedly enter credentials</li>
+                <li>Ensuring security, integrity, and administrative management of JpMC Synapse</li>
+              </ul>
             </div>
           </section>
 
@@ -233,17 +278,14 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 4
               </span>
-              <h2 className="text-base font-bold text-slate-900">Data Sharing</h2>
+              <h2 className="text-base font-bold text-slate-900">Google User Data Protection</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
               <p>
-                Personal information is <strong>not sold or rented to third parties</strong>.
+                For administrators signing in via Google, user information is used solely to authenticate and manage the institutional system.
               </p>
-              <p>
-                Information may only be processed by underlying infrastructure and service providers
-                strictly necessary to operate the application (such as Google Cloud / Firebase hosting and
-                authentication services), or when disclosure is required by applicable law, regulation, or
-                official legal process.
+              <p className="p-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-xl text-slate-800 font-medium text-xs">
+                JpMC Synapse does not sell Google user data or use it for advertising. We do not use user data for commercial profiling, targeted marketing, or any purpose unrelated to the Jamalpur Medical College schedule management system.
               </p>
             </div>
           </section>
@@ -254,13 +296,14 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 5
               </span>
-              <h2 className="text-base font-bold text-slate-900">Data Security</h2>
+              <h2 className="text-base font-bold text-slate-900">Data Sharing & Storage</h2>
             </div>
-            <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
+            <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5 text-xs">
               <p>
-                Reasonable technical and organizational measures are used to protect application and user
-                information against unauthorized access, loss, misuse, or alteration. Access to administrative
-                controls and configuration is restricted to designated institutional administrators.
+                Personal information is <strong>never sold, rented, or shared with commercial third parties</strong>.
+              </p>
+              <p>
+                Meeting and schedule records are stored securely in Google Cloud Firestore within the Jamalpur Medical College project infrastructure. Session tokens are stored as irreversible cryptographic SHA-256 hashes on the server.
               </p>
             </div>
           </section>
@@ -274,15 +317,10 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <h2 className="text-base font-bold text-slate-900">Data Retention and Deletion</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
-              <p>
-                Information is retained only as long as necessary for application operation and legitimate
-                administrative purposes of Jamalpur Medical College.
+              <p className="text-xs">
+                Users may request deletion of their session records, device push tokens, or account profile at any time by contacting the technical administrator:
               </p>
-              <p>
-                Users who wish to request deletion of their account, device registration, or associated
-                personal information may contact the technical administrator directly by emailing:
-              </p>
-              <div className="p-3.5 bg-slate-100 rounded-xl border border-slate-200 flex items-center gap-2 text-slate-800">
+              <div className="p-3 bg-slate-100 rounded-xl border border-slate-200 flex items-center gap-2 text-slate-800">
                 <Mail className="w-4 h-4 text-[#006A60] shrink-0" />
                 <a
                   href="mailto:marufjb@gmail.com?subject=JpMC%20Synapse%20-%20Data%20Deletion%20Request"
@@ -291,101 +329,26 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
                   marufjb@gmail.com
                 </a>
               </div>
-              <p className="text-xs text-slate-500">
-                Upon receiving a verified request, the administrator will review and remove the corresponding user records and device tokens in accordance with operational procedures.
-              </p>
             </div>
           </section>
 
           {/* Section 7 */}
-          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-3">
+          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
             <div className="flex items-center gap-2.5">
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 7
               </span>
-              <h2 className="text-base font-bold text-slate-900">Third-Party Authentication</h2>
-            </div>
-            <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
-              <p>
-                Google Sign-In is provided by Google LLC. When you choose to authenticate using Google, your
-                interaction with Google services is subject to Google&apos;s applicable privacy policies and terms:
-              </p>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <a
-                  href="https://policies.google.com/privacy"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition"
-                >
-                  <span>Google Privacy Policy</span>
-                  <ExternalLink className="w-3 h-3 text-slate-400" />
-                </a>
-                <a
-                  href="https://policies.google.com/terms"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition"
-                >
-                  <span>Google Terms of Service</span>
-                  <ExternalLink className="w-3 h-3 text-slate-400" />
-                </a>
-              </div>
-            </div>
-          </section>
-
-          {/* Section 8 */}
-          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-3">
-            <div className="flex items-center gap-2.5">
-              <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
-                8
-              </span>
-              <h2 className="text-base font-bold text-slate-900">Children&apos;s Privacy</h2>
-            </div>
-            <div className="text-sm text-slate-600 leading-relaxed pl-8.5">
-              <p>
-                JpMC Synapse is an institutional scheduling and notification system intended specifically for
-                faculty, medical officers, administrative staff, and authorized personnel of Jamalpur Medical
-                College. The application is not directed toward children, and it does not knowingly collect
-                personal information from children under the age of 13 (or the applicable age of digital consent in your jurisdiction).
-              </p>
-            </div>
-          </section>
-
-          {/* Section 9 */}
-          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-3">
-            <div className="flex items-center gap-2.5">
-              <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
-                9
-              </span>
-              <h2 className="text-base font-bold text-slate-900">Changes to This Privacy Policy</h2>
-            </div>
-            <div className="text-sm text-slate-600 leading-relaxed pl-8.5">
-              <p>
-                This Privacy Policy may be updated periodically to reflect changes in institutional operations
-                or regulatory requirements. Any material changes will be published directly on this page with an
-                updated &quot;Last updated&quot; date. Users are encouraged to review this page periodically.
-              </p>
-            </div>
-          </section>
-
-          {/* Section 10 */}
-          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
-            <div className="flex items-center gap-2.5">
-              <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
-                10
-              </span>
               <h2 className="text-base font-bold text-slate-900">Contact Information</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed pl-8.5 space-y-3">
-              <p>
-                If you have questions, concerns, or requests regarding this Privacy Policy or your personal
-                information, please contact:
+              <p className="text-xs">
+                If you have questions, concerns, or feedback regarding this Privacy Policy or JpMC Synapse:
               </p>
 
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/90 space-y-1.5">
                 <p className="font-bold text-slate-900 text-sm">Abdullah Al Maruf</p>
-                <p className="text-xs text-slate-600">Developer / Technical Contact, JpMC Synapse</p>
-                <p className="text-xs text-slate-600">Jamalpur Medical College</p>
+                <p className="text-xs text-slate-600">Developer & Technical Administrator, JpMC Synapse</p>
+                <p className="text-xs text-slate-600">Jamalpur Medical College, Jamalpur</p>
                 <div className="pt-2 flex items-center gap-2">
                   <Mail className="w-4 h-4 text-[#006A60]" />
                   <a

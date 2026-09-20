@@ -2,6 +2,9 @@
  * JpMC Synapse — Google Drive Service
  * Manages saving past/completed events history, generating export archives,
  * and listing previous saved exports on Google Drive.
+ * 
+ * Target Scope: https://www.googleapis.com/auth/drive.file (incremental authorization)
+ * Folder: "JpMC Synapse Archives"
  */
 
 import { getAccessToken } from './googleAuth';
@@ -12,19 +15,33 @@ export interface DriveSavedFile {
   name: string;
   mimeType: string;
   createdTime: string;
+  modifiedTime?: string;
   size?: string;
   webViewLink?: string;
 }
 
+let cachedFolderId: string | null = null;
+
+export function clearCachedFolderId(): void {
+  cachedFolderId = null;
+}
+
 /**
- * Searches for or creates a dedicated folder in Google Drive: "JpMC Synapse Archives"
+ * Searches for or creates the dedicated folder in Google Drive: "JpMC Synapse Archives"
+ * Reuses existing folder if already created to prevent creating duplicates.
  */
-async function getOrCreateFolder(accessToken: string): Promise<string> {
+export async function getOrCreateFolder(accessToken: string): Promise<string> {
+  if (cachedFolderId) {
+    return cachedFolderId;
+  }
+
   const folderName = 'JpMC Synapse Archives';
-  const query = encodeURIComponent(`name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-  
+  const query = encodeURIComponent(
+    `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+  );
+
   const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&spaces=drive`,
+    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,trashed)&spaces=drive`,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -34,16 +51,17 @@ async function getOrCreateFolder(accessToken: string): Promise<string> {
 
   if (!searchRes.ok) {
     const errText = await searchRes.text();
-    console.warn('Error searching drive folders:', errText);
+    console.warn('[googleDriveService] Error searching drive folders:', errText);
     throw new Error(`Google Drive API search failed: ${searchRes.statusText}`);
   }
 
   const data = await searchRes.json();
   if (data.files && data.files.length > 0) {
-    return data.files[0].id;
+    cachedFolderId = data.files[0].id;
+    return cachedFolderId;
   }
 
-  // Create the folder
+  // Create folder if not found
   const createFolderRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
@@ -58,10 +76,13 @@ async function getOrCreateFolder(accessToken: string): Promise<string> {
   });
 
   if (!createFolderRes.ok) {
+    const errBody = await createFolderRes.text();
+    console.warn('[googleDriveService] Failed to create folder:', errBody);
     throw new Error('Failed to create JpMC Synapse folder in Google Drive');
   }
 
   const createdFolder = await createFolderRes.json();
+  cachedFolderId = createdFolder.id;
   return createdFolder.id;
 }
 
@@ -79,9 +100,9 @@ export function formatEventsHistoryText(events: EventEntity[]): string {
 
   events.forEach((evt, idx) => {
     doc += `### ${idx + 1}. [${evt.category}] ${evt.title}\n`;
-    doc += `- তারিখ (Date): ${evt.eventDate}\n`;
-    doc += `- সময় (Time): ${evt.startTime}${evt.endTime ? ` - ${evt.endTime}` : ''}\n`;
-    doc += `- স্থান (Venue): ${evt.venue}\n`;
+    doc += `- তারিখ (Date): ${evt.eventDate || 'উল্লেখ নেই'}\n`;
+    doc += `- সময় (Time): ${evt.startTime || 'উল্লেখ নেই'}${evt.endTime ? ` - ${evt.endTime}` : ''}\n`;
+    doc += `- স্থান (Venue): ${evt.venue || 'উল্লেখ নেই'}\n`;
     doc += `- অগ্রাধিকার (Priority): ${evt.priority.toUpperCase()}\n`;
     doc += `- উৎস (Source): ${evt.source}\n`;
     doc += `- অবস্থা (Status): ${evt.isCompleted ? 'সম্পন্ন (Completed)' : 'চলমান/অপেক্ষমান (Active/Past)'}\n`;
@@ -96,7 +117,7 @@ export function formatEventsHistoryText(events: EventEntity[]): string {
 }
 
 /**
- * Uploads events history to Google Drive as both JSON and readable Markdown/Text
+ * Uploads events history to Google Drive in the dedicated "JpMC Synapse Archives" folder
  */
 export async function saveEventHistoryToDrive(
   events: EventEntity[],
@@ -104,7 +125,7 @@ export async function saveEventHistoryToDrive(
 ): Promise<{ fileId: string; fileName: string; webViewLink?: string }> {
   const token = await getAccessToken();
   if (!token) {
-    throw new Error('Please sign in with Google to authorize Google Drive upload.');
+    throw new Error('Please connect Google Drive to authorize upload.');
   }
 
   const folderId = await getOrCreateFolder(token);
@@ -159,7 +180,7 @@ export async function saveEventHistoryToDrive(
 
   if (!response.ok) {
     const err = await response.text();
-    console.warn('Drive upload failed:', err);
+    console.warn('[googleDriveService] Drive upload failed:', err);
     throw new Error(`Google Drive upload failed: ${response.statusText}`);
   }
 
@@ -172,39 +193,50 @@ export async function saveEventHistoryToDrive(
 }
 
 /**
- * Lists previously uploaded JpMC history files from the user's Google Drive
+ * Lists previously uploaded JpMC history files from the dedicated archive folder in Google Drive.
+ * Handles pagination to ensure all existing archives are retrieved and sorted by createdTime descending.
  */
 export async function listDriveHistoryFiles(): Promise<DriveSavedFile[]> {
   const token = await getAccessToken();
-  if (!token) return [];
+  if (!token) {
+    throw new Error('NOT_AUTHENTICATED');
+  }
 
-  try {
-    const folderId = await getOrCreateFolder(token);
+  const folderId = await getOrCreateFolder(token);
+  const allFiles: DriveSavedFile[] = [];
+  let pageToken: string | null = null;
+
+  do {
     const query = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
-    const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,createdTime,size,webViewLink)&orderBy=createdTime desc`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }
-    );
+    let url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,size,webViewLink)&orderBy=createdTime desc&pageSize=100`;
+    if (pageToken) {
+      url += `&pageToken=${encodeURIComponent(pageToken)}`;
+    }
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
 
     if (!res.ok) {
-      console.warn('Failed to list drive files:', await res.text());
-      return [];
+      const errText = await res.text();
+      console.warn('[googleDriveService] Failed to list drive files:', errText);
+      throw new Error(`Google Drive list failed: ${res.statusText}`);
     }
 
     const data = await res.json();
-    return data.files || [];
-  } catch (err) {
-    console.warn('Error listing drive files:', err);
-    return [];
-  }
+    if (data.files && Array.isArray(data.files)) {
+      allFiles.push(...data.files);
+    }
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+
+  return allFiles;
 }
 
 /**
- * Deletes a file from Google Drive (Requires explicit confirmation before calling)
+ * Deletes an archive file from Google Drive
  */
 export async function deleteDriveFile(fileId: string): Promise<boolean> {
   const token = await getAccessToken();
@@ -218,4 +250,27 @@ export async function deleteDriveFile(fileId: string): Promise<boolean> {
   });
 
   return res.ok;
+}
+
+/**
+ * Formats file size in bytes to a human-readable string (KB / MB)
+ */
+export function formatDriveFileSize(bytes?: string | number): string {
+  if (!bytes) return '—';
+  const num = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
+  if (isNaN(num) || num <= 0) return '—';
+  if (num < 1024) return `${num} B`;
+  if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+  return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Helper to determine file type label
+ */
+export function getDriveFileTypeLabel(mimeType?: string, fileName?: string): string {
+  const lowerName = (fileName || '').toLowerCase();
+  if (mimeType?.includes('json') || lowerName.endsWith('.json')) return 'JSON';
+  if (mimeType?.includes('markdown') || lowerName.endsWith('.md')) return 'Markdown';
+  if (mimeType?.includes('text') || lowerName.endsWith('.txt')) return 'Text';
+  return 'Archive';
 }

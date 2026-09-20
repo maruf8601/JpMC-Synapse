@@ -17,15 +17,19 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { AnnouncementEntity, AnnouncementReceipt } from '../domain/models';
+import { getStoredUserSession } from './authService';
 
 export async function getAuthToken(): Promise<string | undefined> {
   const currentUser = auth.currentUser;
-  if (!currentUser) return undefined;
-  try {
-    return await currentUser.getIdToken();
-  } catch {
-    return undefined;
+  if (currentUser) {
+    try {
+      return await currentUser.getIdToken();
+    } catch {
+      // Fall through to stored normal session
+    }
   }
+  const stored = getStoredUserSession();
+  return stored?.token;
 }
 
 /**
