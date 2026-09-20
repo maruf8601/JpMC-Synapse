@@ -12,6 +12,13 @@ import { Capacitor } from '@capacitor/core';
  */
 
 export const RENDER_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.onrender.com';
+export const CLOUDFLARE_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.workers.dev';
+
+// Default backend target can be toggled via VITE_API_TARGET ('cloudflare' | 'render') or VITE_API_URL
+export const DEFAULT_PRODUCTION_BACKEND_URL =
+  ((import.meta as any).env?.VITE_API_TARGET === 'cloudflare')
+    ? CLOUDFLARE_PRODUCTION_BACKEND_URL
+    : RENDER_PRODUCTION_BACKEND_URL;
 
 export function getApiBaseUrl(): string {
   // 1. Native Capacitor runtime (Android / iOS APK)
@@ -20,7 +27,7 @@ export function getApiBaseUrl(): string {
     if (customUrl && !customUrl.includes('localhost') && !customUrl.includes('127.0.0.1')) {
       return customUrl.replace(/\/$/, '');
     }
-    return RENDER_PRODUCTION_BACKEND_URL;
+    return DEFAULT_PRODUCTION_BACKEND_URL;
   }
 
   // 2. Explicit environment override for web (if provided)
@@ -29,7 +36,7 @@ export function getApiBaseUrl(): string {
     return explicitUrl.replace(/\/$/, '');
   }
 
-  // 3. Browser development or same-origin web deployment
+  // 3. Browser development or same-origin web deployment (Cloudflare or Render)
   return '';
 }
 

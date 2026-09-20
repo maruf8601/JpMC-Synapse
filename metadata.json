@@ -1,6 +1,10 @@
 {
-  "name": "JpMC Synapse",
-  "description": "Smart Schedule & Reminder System for Jamalpur Medical College (JpMC) with Google Drive event history archive.",
-  "requestFramePermissions": ["notifications"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "name": "JpMC Synapse - Cloud",
+  "description": "Smart Schedule \u0026 Reminder System for Jamalpur Medical College (JpMC) with Google Drive event history archive.",
+  "requestFramePermissions": [
+    "notifications"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
