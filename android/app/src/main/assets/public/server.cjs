@@ -2677,11 +2677,6 @@ async function startServer() {
         registeredDevices: devices.length,
         schedulerRunning: scheduler.isRunning,
         lastSchedulerTick: scheduler.lastTickAt
-      },
-      calendar: {
-        service: "Google Calendar API v3",
-        authMode: "Client-side OAuth 2.0",
-        scope: "https://www.googleapis.com/auth/calendar.events"
       }
     });
   });
