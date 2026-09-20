@@ -289,6 +289,18 @@ async function startServer() {
     });
   });
 
+  // Safe runtime diagnostic endpoint for Render (NEVER returns secret values)
+  app.get('/api/debug/runtime', (req, res) => {
+    res.json({
+      runtime: 'node-render',
+      staffAccessCodeConfigured: Boolean(process.env.STAFF_ACCESS_CODE),
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      firebaseServiceAccountConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY),
+      schedulerConfigured: Boolean(process.env.SCHEDULER_SECRET),
+    });
+  });
+
   // Server-side Gemini Event Extraction Endpoint
   app.post('/api/extract-events', async (req, res) => {
     try {

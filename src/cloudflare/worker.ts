@@ -309,6 +309,22 @@ async function handleApiRoute(
     );
   }
 
+  // Safe runtime diagnostic endpoint (NEVER returns secret values)
+  if (pathname === '/api/debug/runtime' && method === 'GET') {
+    return jsonResponse(
+      {
+        runtime: 'cloudflare',
+        staffAccessCodeConfigured: Boolean(env.STAFF_ACCESS_CODE),
+        geminiConfigured: Boolean(env.GEMINI_API_KEY),
+        telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+        firebaseServiceAccountConfigured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY),
+        schedulerConfigured: Boolean(env.SCHEDULER_SECRET),
+      },
+      200,
+      corsHeaders
+    );
+  }
+
   if (pathname === '/api/integrations/status' && method === 'GET') {
     return jsonResponse(
       {
