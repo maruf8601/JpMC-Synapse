@@ -85,7 +85,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
               <div className="space-y-2 flex-1 min-w-0">
                 <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
                   <Award className="w-4 h-4 text-teal-700 shrink-0" />
-                  <span className="truncate">Developed by: Abdullah Al Maruf</span>
+                  <span className="truncate">Abdullah Al Maruf</span>
                 </div>
 
                 <div className="space-y-1.5 text-slate-600 pt-0.5">

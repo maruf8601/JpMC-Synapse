@@ -334,7 +334,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
             <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 text-xs text-slate-700 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-600">সার্ভার ব্যাকএন্ড:</span>
-                <span className="font-mono text-teal-800">https://jpmc-synapse.onrender.com</span>
+                <span className="font-mono text-teal-800">
+                  {typeof window !== 'undefined' ? window.location.origin : 'https://jpmc-synapse.marufjb.workers.dev'}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-600">টাইমজোন:</span>

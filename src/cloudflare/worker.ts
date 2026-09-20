@@ -4,7 +4,7 @@
  * Preserves full compatibility with React + Vite frontend, Android Capacitor app, and Telegram Webhooks.
  */
 
-import { Env, WorkerAuthUser, ExecutionContext, ScheduledEvent } from './types';
+import { Env, WorkerAuthUser, ExecutionContext, ScheduledEvent, INITIAL_ADMIN_EMAILS } from './types';
 import {
   firestoreGetDoc,
   firestoreSetDoc,
@@ -164,6 +164,8 @@ export default {
     }
 
     // 2. Route API requests
+    // /api/* routes must NEVER fall back to index.html.
+    // Unknown API routes return JSON 404 inside handleApiRoute().
     if (pathname.startsWith('/api/')) {
       try {
         return await handleApiRoute(request, env, ctx, pathname, method, url);
@@ -180,21 +182,74 @@ export default {
       }
     }
 
-    // 3. Static Assets & SPA Routing for Non-API Routes
+    // 3. Firebase Authentication Reverse Proxy (/__/auth/*)
+    // When Firebase Auth uses an authorized custom or worker domain,
+    // it executes OAuth callbacks, iframe checks, and scripts at /__/auth/*
+    // (e.g. /__/auth/handler, /__/auth/iframe, /__/auth/experiments.js).
+    // These must be proxied to the official Firebase project host.
+    if (pathname.startsWith('/__/auth/')) {
+      const firebaseProjectId = env.FIREBASE_PROJECT_ID || 'sapient-pen-336609';
+      const firebaseAuthHost = `${firebaseProjectId}.firebaseapp.com`;
+      const targetUrl = new URL(pathname + url.search, `https://${firebaseAuthHost}`);
+
+      const proxyHeaders = new Headers(request.headers);
+      proxyHeaders.set('Host', firebaseAuthHost);
+
+      const hasBody = !['GET', 'HEAD'].includes(method);
+      const proxyReq = new Request(targetUrl.toString(), {
+        method: request.method,
+        headers: proxyHeaders,
+        body: hasBody ? request.body : undefined,
+        redirect: 'manual',
+      });
+
+      try {
+        return await fetch(proxyReq);
+      } catch (proxyErr) {
+        console.error('[Worker Firebase Auth Proxy Error]:', proxyErr);
+        return new Response('Firebase Auth Proxy Error', { status: 502 });
+      }
+    }
+
+    // 4. Static Assets & SPA Routing for Non-API Routes
     if (env.ASSETS) {
-      const assetRes = await env.ASSETS.fetch(request);
-      // If asset is found, return it directly
-      if (assetRes.status !== 404) {
-        return assetRes;
+      // Step A: Attempt to serve matching static asset directly from dist/
+      try {
+        const assetRes = await env.ASSETS.fetch(request);
+        if (assetRes.status !== 404) {
+          return assetRes;
+        }
+      } catch (assetErr) {
+        console.warn('[Worker ASSETS fetch warning]:', assetErr);
       }
 
-      // For GET HTML requests, fallback to index.html for client-side routing
-      if (method === 'GET' && !pathname.includes('.')) {
-        const indexRequest = new Request(new URL('/index.html', request.url), request);
-        return await env.ASSETS.fetch(indexRequest);
+      // Step B: Check if this was a request for a concrete missing file (e.g. .js, .css, .png, etc.)
+      // Missing static files should return 404 rather than corrupting browser asset pipelines with HTML
+      const isStaticFile = /\.[a-zA-Z0-9]{1,8}(\?.*)?$/.test(pathname);
+      if (isStaticFile && !pathname.endsWith('.html')) {
+        return new Response('Not Found', { status: 404 });
       }
 
-      return assetRes;
+      // Step C: SPA Fallback for all non-API GET / HEAD navigation routes
+      // (e.g. /, /settings, /calendar, /login, /inbox, /admin, /history, /privacy, /terms, etc.)
+      if (method === 'GET' || method === 'HEAD') {
+        const indexUrl = new URL('/index.html', request.url);
+        try {
+          const indexRes = await env.ASSETS.fetch(
+            new Request(indexUrl.toString(), {
+              method,
+              headers: request.headers,
+            })
+          );
+          if (indexRes.status === 200 || indexRes.status === 304) {
+            return indexRes;
+          }
+          // If conditional headers failed, fetch clean GET
+          return await env.ASSETS.fetch(new Request(indexUrl.toString(), { method: 'GET' }));
+        } catch (indexErr) {
+          console.error('[Worker SPA fallback error]:', indexErr);
+        }
+      }
     }
 
     return new Response('Not Found', { status: 404 });
@@ -246,7 +301,7 @@ async function handleApiRoute(
           gemini: Boolean(env.GEMINI_API_KEY),
           telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
           firebase: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY || env.FIREBASE_PROJECT_ID),
-          staffAuth: Boolean(env.STAFF_ACCESS_CODE || env.USER_ACCESS_CODE),
+          staffAuth: Boolean(env.STAFF_ACCESS_CODE),
         },
       },
       200,
@@ -266,7 +321,7 @@ async function handleApiRoute(
             configured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY),
             projectId: env.FIREBASE_PROJECT_ID || 'sapient-pen-336609',
           },
-          staffAuth: { configured: Boolean(env.STAFF_ACCESS_CODE || env.USER_ACCESS_CODE) },
+          staffAuth: { configured: Boolean(env.STAFF_ACCESS_CODE) },
         },
       },
       200,
@@ -519,20 +574,85 @@ async function handleApiRoute(
   // -------------------------------------------------------------
   if (pathname === '/api/auth/user-login' && method === 'POST') {
     const body = (await request.json().catch(() => ({}))) as any;
-    const { name, accessCode, clientDeviceId } = body;
+    const clientDeviceId = body?.clientDeviceId;
 
-    const trimmedName = (name || '').trim();
-    const submittedCode = (accessCode || '').trim();
+    // Support canonical property (accessCode) with fallback to synonyms (staffAccessCode, access_code, code)
+    const submittedCode = String(
+      body?.accessCode ??
+      body?.staffAccessCode ??
+      body?.access_code ??
+      body?.code ??
+      ''
+    ).trim();
 
-    if (!trimmedName) {
-      return jsonResponse({ success: false, error: 'NAME_REQUIRED' }, 400, corsHeaders);
+    // Read ONLY env.STAFF_ACCESS_CODE from Cloudflare Worker environment
+    const configuredCode = String(env.STAFF_ACCESS_CODE ?? '').trim();
+
+    // Safe diagnostics - NEVER report actual codes
+    const safeDiagnostics = {
+      configuredExists: Boolean(configuredCode),
+      submittedLength: submittedCode.length,
+      configuredLength: configuredCode.length,
+    };
+
+    console.log('[Worker Staff Auth] Login diagnostics:', safeDiagnostics);
+
+    // 1. Missing server configuration error: env.STAFF_ACCESS_CODE not configured
+    if (!configuredCode) {
+      console.error('[Worker Staff Auth] STAFF_ACCESS_CODE secret is not configured in Cloudflare environment');
+      return jsonResponse(
+        {
+          success: false,
+          error: 'ACCESS_CODE_NOT_CONFIGURED',
+          message: 'Server configuration error: STAFF_ACCESS_CODE is not configured in Cloudflare Worker secrets',
+          diagnostics: safeDiagnostics,
+        },
+        500,
+        corsHeaders
+      );
     }
 
-    // Read server-side access code from Cloudflare environment
-    const serverCode = (env.STAFF_ACCESS_CODE || env.USER_ACCESS_CODE || '').trim();
+    // 2. Missing submitted access code validation error
+    if (!submittedCode) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'ACCESS_CODE_REQUIRED',
+          message: 'Validation error: access code is required',
+          diagnostics: safeDiagnostics,
+        },
+        400,
+        corsHeaders
+      );
+    }
 
-    if (!serverCode || submittedCode !== serverCode) {
-      return jsonResponse({ success: false, error: 'INVALID_ACCESS_CODE' }, 401, corsHeaders);
+    // Name validation
+    const trimmedName = String(body?.name ?? body?.fullName ?? '').trim();
+    if (!trimmedName) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'NAME_REQUIRED',
+          message: 'Validation error: full name is required',
+          diagnostics: safeDiagnostics,
+        },
+        400,
+        corsHeaders
+      );
+    }
+
+    // 3. Incorrect submitted access code (exact case-sensitive comparison with normalized whitespace)
+    if (submittedCode !== configuredCode) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'INVALID_ACCESS_CODE',
+          message: 'Invalid institutional access code',
+          diagnostics: safeDiagnostics,
+        },
+        401,
+        corsHeaders
+      );
     }
 
     // Generate deterministic User ID
@@ -597,6 +717,7 @@ async function handleApiRoute(
           active: true,
         },
         customToken,
+        diagnostics: safeDiagnostics,
       },
       200,
       corsHeaders
@@ -695,6 +816,96 @@ async function handleApiRoute(
     }
 
     return jsonResponse({ user: auth.user }, 200, corsHeaders);
+  }
+
+  // Admin Google Sign-In & Verification Endpoint
+  if (pathname === '/api/auth/admin-verify' && method === 'POST') {
+    try {
+      const authHeader = request.headers.get('authorization') || '';
+      let token = '';
+      if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7).trim();
+      }
+      if (!token) {
+        return jsonResponse({ authorized: false, error: 'Missing authorization token' }, 401, corsHeaders);
+      }
+
+      const verification = await verifyFirebaseIdToken(token, env);
+      if (!verification.valid || !verification.user) {
+        return jsonResponse(
+          {
+            authorized: false,
+            error: 'গুগল প্রমাণীকরণ যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।',
+          },
+          401,
+          corsHeaders
+        );
+      }
+
+      const email = (verification.user.email || '').trim().toLowerCase();
+      const uid = verification.user.uid;
+
+      let authDoc = await firestoreGetDoc(env, 'authorizedUsers', uid);
+      const isInitialAdmin = email && Boolean(INITIAL_ADMIN_EMAILS[email]);
+
+      if (!authDoc && isInitialAdmin) {
+        const nowIso = new Date().toISOString();
+        authDoc = {
+          uid,
+          email: verification.user.email,
+          displayName: verification.user.displayName || INITIAL_ADMIN_EMAILS[email]?.label || email.split('@')[0],
+          photoURL: verification.user.photoURL || null,
+          role: 'admin',
+          active: true,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        await firestoreSetDoc(env, 'authorizedUsers', uid, authDoc, true);
+      }
+
+      const isAdmin =
+        (authDoc?.role === 'admin' || (isInitialAdmin && authDoc?.active !== false)) &&
+        authDoc?.active !== false;
+
+      if (!isAdmin) {
+        console.warn(`[Worker Auth] Unauthorized Google Admin sign-in rejected: ${email} (${uid})`);
+        return jsonResponse(
+          {
+            authorized: false,
+            error:
+              'এই গুগল অ্যাকাউন্টটি অ্যাডমিনিস্ট্রেটর হিসেবে অনুমোদিত নয়। সাধারণ ব্যবহারকারী হিসেবে আপনার নাম ও অ্যাক্সেস কোড দিয়ে প্রবেশ করুন।',
+          },
+          403,
+          corsHeaders
+        );
+      }
+
+      return jsonResponse(
+        {
+          authorized: true,
+          user: {
+            uid,
+            email: verification.user.email,
+            displayName: authDoc?.displayName || verification.user.displayName || email.split('@')[0],
+            photoURL: verification.user.photoURL || authDoc?.photoURL || null,
+            role: 'admin',
+            active: true,
+          },
+        },
+        200,
+        corsHeaders
+      );
+    } catch (err: any) {
+      console.error('[Worker Auth] admin-verify error:', err);
+      return jsonResponse(
+        {
+          authorized: false,
+          error: 'গুগল প্রমাণীকরণ যাচাই ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।',
+        },
+        401,
+        corsHeaders
+      );
+    }
   }
 
   // -------------------------------------------------------------

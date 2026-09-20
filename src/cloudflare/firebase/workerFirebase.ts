@@ -9,7 +9,7 @@
  * 5. Google FCM v1 HTTP API (push notifications to Android & Web)
  */
 
-import { Env, ServiceAccountCredentials, WorkerAuthUser } from '../types';
+import { Env, ServiceAccountCredentials, WorkerAuthUser, INITIAL_ADMIN_EMAILS } from '../types';
 
 // In-memory token & cert caches inside the Worker isolate
 let cachedGoogleAccessToken: { token: string; expiresAt: number } | null = null;
@@ -582,14 +582,16 @@ export async function verifyFirebaseIdToken(
       return { valid: false, error: 'TOKEN_EXPIRED' };
     }
 
-    // Role check from Firestore authorizedUsers collection
-    let role: 'admin' | 'user' = 'user';
+    // Role check from initial admin configuration or Firestore authorizedUsers collection
+    const email = (payload.email || '').trim().toLowerCase();
+    const isInitialAdmin = email && Boolean(INITIAL_ADMIN_EMAILS[email]);
+    let role: 'admin' | 'user' = isInitialAdmin ? 'admin' : 'user';
     let active = true;
 
     try {
       const userDoc = await firestoreGetDoc(env, 'authorizedUsers', payload.sub);
       if (userDoc) {
-        if (userDoc.role === 'admin') role = 'admin';
+        if (userDoc.role === 'admin' || isInitialAdmin) role = 'admin';
         if (typeof userDoc.active === 'boolean') active = userDoc.active;
       }
     } catch {

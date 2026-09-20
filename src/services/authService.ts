@@ -101,8 +101,14 @@ export async function loginNormalUser(name: string, accessCode: string): Promise
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok || !data.success) {
+    if (data.diagnostics) {
+      console.warn('[authService] Staff login diagnostics from server:', data.diagnostics);
+    }
     if (data.error === 'ACCESS_CODE_NOT_CONFIGURED') {
       throw new Error('সার্ভারে প্রাতিষ্ঠানিক অ্যাক্সেস কোড কনফিগার করা হয়নি।');
+    }
+    if (data.error === 'ACCESS_CODE_REQUIRED') {
+      throw new Error('অনুগ্রহ করে প্রাতিষ্ঠানিক অ্যাক্সেস কোড লিখুন।');
     }
     if (data.error === 'INVALID_ACCESS_CODE') {
       throw new Error('প্রাতিষ্ঠানিক অ্যাক্সেস কোড সঠিক নয়।');
@@ -110,7 +116,11 @@ export async function loginNormalUser(name: string, accessCode: string): Promise
     if (data.error === 'NAME_REQUIRED') {
       throw new Error('অনুগ্রহ করে আপনার পূর্ণ নাম লিখুন।');
     }
-    throw new Error('সার্ভারের সাথে সংযোগ স্থাপন করা যাচ্ছে না।');
+    throw new Error(data.message || 'সার্ভারের সাথে সংযোগ স্থাপন করা যাচ্ছে না।');
+  }
+
+  if (data.diagnostics) {
+    console.log('[authService] Staff login successful. Diagnostics:', data.diagnostics);
   }
 
   const userProfile: UserSessionProfile = {

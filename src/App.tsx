@@ -47,9 +47,25 @@ import {
   setUserSeenAbout,
 } from './services/userPreferencesService';
 
+// Helper to map pathname to navigation tab
+function getTabFromPath(path: string): NavigationTab {
+  const clean = path.toLowerCase().replace(/^\/+|\/+$/g, '');
+  if (clean === 'settings') return 'settings';
+  if (clean === 'calendar') return 'calendar';
+  if (clean === 'inbox') return 'inbox';
+  if (clean === 'admin') return 'admin';
+  if (clean === 'history') return 'history';
+  return 'home';
+}
+
 export default function App() {
   const [language, setLanguage] = useState<Language>('bn');
-  const [currentTab, setCurrentTab] = useState<NavigationTab>('home');
+  const [currentTab, setCurrentTab] = useState<NavigationTab>(() => {
+    if (typeof window !== 'undefined') {
+      return getTabFromPath(window.location.pathname);
+    }
+    return 'home';
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
 
@@ -98,10 +114,30 @@ export default function App() {
     return typeof window !== 'undefined' && window.location.pathname.startsWith('/terms');
   });
 
+  const handleNavigateToTab = (tab: NavigationTab) => {
+    setIsReviewOpenFromHeader(false);
+    setSearchQuery('');
+    if (tab === 'add') {
+      setIsQuickAddOpen(true);
+      return;
+    }
+    setCurrentTab(tab);
+    if (typeof window !== 'undefined') {
+      const targetPath = tab === 'home' ? '/' : `/${tab}`;
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState(null, '', targetPath);
+      }
+    }
+  };
+
   useEffect(() => {
     const handleLocationChange = () => {
-      setIsPrivacyRoute(window.location.pathname.startsWith('/privacy'));
-      setIsTermsRoute(window.location.pathname.startsWith('/terms'));
+      const path = window.location.pathname;
+      setIsPrivacyRoute(path.startsWith('/privacy'));
+      setIsTermsRoute(path.startsWith('/terms'));
+      if (!path.startsWith('/privacy') && !path.startsWith('/terms')) {
+        setCurrentTab(getTabFromPath(path));
+      }
     };
     window.addEventListener('popstate', handleLocationChange);
     return () => window.removeEventListener('popstate', handleLocationChange);
@@ -526,6 +562,9 @@ export default function App() {
     return (
       <LoginScreen
         onLoginSuccess={(profile) => {
+          if (typeof window !== 'undefined' && window.location.pathname === '/login') {
+            window.history.replaceState(null, '', '/');
+          }
           if (profile) {
             setAuthState({
               initialized: true,
@@ -638,7 +677,7 @@ export default function App() {
                 eventsThisWeek={eventsThisWeek}
                 onSelectEvent={setSelectedEvent}
                 onToggleComplete={handleToggleComplete}
-                onNavigateToTab={setCurrentTab}
+                onNavigateToTab={handleNavigateToTab}
                 onOpenReviewModal={() => setIsReviewOpenFromHeader(true)}
                 onOpenQuickAdd={() => setIsQuickAddOpen(true)}
                 language={language}
@@ -723,7 +762,7 @@ export default function App() {
                   setIsPrivacyRoute(false);
                 }}
                 onResetData={() => eventRepository.resetToDefaults()}
-                onNavigateToTab={setCurrentTab}
+                onNavigateToTab={handleNavigateToTab}
                 onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}
                 userProfile={userProfile}
                 onLogout={handleLogout}
@@ -737,13 +776,7 @@ export default function App() {
       <BottomNavBar
         currentTab={currentTab}
         onSelectTab={(tab) => {
-          setIsReviewOpenFromHeader(false);
-          setSearchQuery('');
-          if (tab === 'add') {
-            setIsQuickAddOpen(true);
-          } else {
-            setCurrentTab(tab);
-          }
+          handleNavigateToTab(tab);
         }}
         language={language}
         onOpenQuickAdd={() => setIsQuickAddOpen(true)}

@@ -14,11 +14,12 @@ import { Capacitor } from '@capacitor/core';
 export const RENDER_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.onrender.com';
 export const CLOUDFLARE_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.workers.dev';
 
-// Default backend target can be toggled via VITE_API_TARGET ('cloudflare' | 'render') or VITE_API_URL
+// Default backend target can be toggled via VITE_API_TARGET ('cloudflare' | 'render') or VITE_API_URL.
+// Defaults to Cloudflare Workers for modern deployments.
 export const DEFAULT_PRODUCTION_BACKEND_URL =
-  ((import.meta as any).env?.VITE_API_TARGET === 'cloudflare')
-    ? CLOUDFLARE_PRODUCTION_BACKEND_URL
-    : RENDER_PRODUCTION_BACKEND_URL;
+  ((import.meta as any).env?.VITE_API_TARGET === 'render')
+    ? RENDER_PRODUCTION_BACKEND_URL
+    : CLOUDFLARE_PRODUCTION_BACKEND_URL;
 
 export function getApiBaseUrl(): string {
   // 1. Native Capacitor runtime (Android / iOS APK)
@@ -30,13 +31,30 @@ export function getApiBaseUrl(): string {
     return DEFAULT_PRODUCTION_BACKEND_URL;
   }
 
-  // 2. Explicit environment override for web (if provided)
+  // 2. Browser web deployment (Cloudflare Workers, local dev, or preview):
+  // When running in the browser, always use same-origin relative '/api' endpoint
+  // to ensure requests execute directly on the current deployment (Cloudflare Worker)
+  // and NEVER accidentally route to an outdated Render backend.
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    // If deployed on Cloudflare (*.workers.dev, *.pages.dev) or custom web domain, strictly use same-origin
+    if (hostname.includes('workers.dev') || hostname.includes('pages.dev') || !hostname.includes('localhost')) {
+      return '';
+    }
+    // Only allow explicit VITE_API_URL during local desktop development when explicitly configured
+    const explicitUrl = (import.meta as any).env?.VITE_API_URL;
+    if (explicitUrl) {
+      return explicitUrl.replace(/\/$/, '');
+    }
+    return '';
+  }
+
+  // 3. Fallback for SSR or non-browser environments
   const explicitUrl = (import.meta as any).env?.VITE_API_URL;
   if (explicitUrl) {
     return explicitUrl.replace(/\/$/, '');
   }
 
-  // 3. Browser development or same-origin web deployment (Cloudflare or Render)
   return '';
 }
 
@@ -83,7 +101,7 @@ export async function fetchTelegramStatus(): Promise<SafeTelegramStatus> {
       const data = await res.json();
       return {
         configured: Boolean(data.configured),
-        webhookUrl: data.webhookUrl || `${RENDER_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
+        webhookUrl: data.webhookUrl || `${DEFAULT_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
         status: data.configured ? 'active' : 'pending_configuration',
         processedCount: typeof data.processedCount === 'number' ? data.processedCount : (data.totalMessagesReceived || 0),
         totalMessagesReceived: typeof data.totalMessagesReceived === 'number' ? data.totalMessagesReceived : (data.processedCount || 0),
@@ -96,7 +114,7 @@ export async function fetchTelegramStatus(): Promise<SafeTelegramStatus> {
 
   return {
     configured: false,
-    webhookUrl: `${RENDER_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
+    webhookUrl: `${DEFAULT_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
     status: 'pending_configuration',
     processedCount: 0,
     totalMessagesReceived: 0,

@@ -12,7 +12,6 @@ export interface Env {
 
   // Staff Account & Authentication
   STAFF_ACCESS_CODE?: string;
-  USER_ACCESS_CODE?: string; // Backwards-compatible fallback
 
   // AI & Automation
   GEMINI_API_KEY?: string;
@@ -65,3 +64,8 @@ export interface ScheduledEvent {
   type: string;
   scheduledTime: number;
 }
+
+export const INITIAL_ADMIN_EMAILS: Record<string, { label: string; role: 'admin' }> = {
+  'marufjb@gmail.com': { label: 'Maruf', role: 'admin' },
+  'nasir230171@gmail.com': { label: 'Principal', role: 'admin' },
+};

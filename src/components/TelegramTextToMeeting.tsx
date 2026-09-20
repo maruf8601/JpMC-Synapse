@@ -181,7 +181,7 @@ export const TelegramTextToMeeting: React.FC<TelegramTextToMeetingProps> = ({
     if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
       return `${window.location.origin}/api/telegram/webhook`;
     }
-    return 'https://jpmc-synapse.onrender.com/api/telegram/webhook';
+    return 'https://jpmc-synapse.marufjb.workers.dev/api/telegram/webhook';
   };
 
   const handleCopyWebhookUrl = () => {
