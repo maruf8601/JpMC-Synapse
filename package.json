@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "cf:dev": "wrangler dev",
-    "cf:deploy": "wrangler deploy",
+    "cf:deploy": "wrangler deploy --keep-vars",
     "cf:dry-run": "wrangler deploy --dry-run"
   },
   "dependencies": {

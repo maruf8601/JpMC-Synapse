@@ -314,11 +314,13 @@ async function handleApiRoute(
     return jsonResponse(
       {
         runtime: 'cloudflare',
-        staffAccessCodeConfigured: Boolean(env.STAFF_ACCESS_CODE),
-        geminiConfigured: Boolean(env.GEMINI_API_KEY),
-        telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+        firebaseProjectConfigured: Boolean(env.FIREBASE_PROJECT_ID),
         firebaseServiceAccountConfigured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY),
+        geminiConfigured: Boolean(env.GEMINI_API_KEY),
         schedulerConfigured: Boolean(env.SCHEDULER_SECRET),
+        staffAccessCodeConfigured: Boolean(env.STAFF_ACCESS_CODE),
+        telegramBotConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+        telegramWebhookSecretConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET),
       },
       200,
       corsHeaders

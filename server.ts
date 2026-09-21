@@ -289,15 +289,17 @@ async function startServer() {
     });
   });
 
-  // Safe runtime diagnostic endpoint for Render (NEVER returns secret values)
+  // Safe runtime diagnostic endpoint for Node/Render (NEVER returns secret values)
   app.get('/api/debug/runtime', (req, res) => {
     res.json({
       runtime: 'node-render',
-      staffAccessCodeConfigured: Boolean(process.env.STAFF_ACCESS_CODE),
-      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
-      telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      firebaseProjectConfigured: Boolean(process.env.FIREBASE_PROJECT_ID),
       firebaseServiceAccountConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY),
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       schedulerConfigured: Boolean(process.env.SCHEDULER_SECRET),
+      staffAccessCodeConfigured: Boolean(process.env.STAFF_ACCESS_CODE),
+      telegramBotConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      telegramWebhookSecretConfigured: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
     });
   });
 
