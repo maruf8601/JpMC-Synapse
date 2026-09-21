@@ -22,14 +22,6 @@
   "vars": {
     "FIREBASE_PROJECT_ID": "sapient-pen-336609"
   },
-  "secrets": {
-    "required": [
-      "FIREBASE_SERVICE_ACCOUNT_KEY",
-      "GEMINI_API_KEY",
-      "SCHEDULER_SECRET",
-      "STAFF_ACCESS_CODE",
-      "TELEGRAM_BOT_TOKEN",
-      "TELEGRAM_WEBHOOK_SECRET"
-    ]
+ 
   }
 }
