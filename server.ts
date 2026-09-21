@@ -51,6 +51,7 @@ import {
   getAllAnnouncementsForAdmin,
   getActiveAnnouncementsForUser,
   getAnnouncementReceipt,
+  getAnnouncementReceiptsForAdmin,
   recordUserSeenAnnouncement,
   recordUserAcknowledgedAnnouncement,
   sendAnnouncementPushBroadcast,
@@ -801,6 +802,18 @@ async function startServer() {
     }
   });
 
+  // Admin: Get list of users who viewed / acknowledged an announcement
+  app.get('/api/admin/announcements/:id/receipts', requireAdminAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const data = await getAnnouncementReceiptsForAdmin(id);
+      res.json({ success: true, ...data });
+    } catch (err: any) {
+      console.error(`[API /api/admin/announcements/${req.params.id}/receipts] Error:`, err);
+      res.status(500).json({ error: err?.message || 'Failed to retrieve announcement receipts' });
+    }
+  });
+
   // User / App: Get active unexpired announcements for current authenticated user
   app.get('/api/announcements/active', validateActiveUserAuth, async (req, res) => {
     try {
@@ -818,7 +831,9 @@ async function startServer() {
     try {
       const user = (req as any).user;
       const { id } = req.params;
-      await recordUserSeenAnnouncement(id, user.uid);
+      const displayName = req.body?.displayName || user.displayName || user.name;
+      const email = req.body?.email || user.email;
+      await recordUserSeenAnnouncement(id, user.uid, { displayName, email });
       res.json({ success: true, announcementId: id, uid: user.uid });
     } catch (err: any) {
       console.error(`[API /api/announcements/${req.params.id}/seen] Error:`, err);
@@ -831,7 +846,9 @@ async function startServer() {
     try {
       const user = (req as any).user;
       const { id } = req.params;
-      await recordUserAcknowledgedAnnouncement(id, user.uid);
+      const displayName = req.body?.displayName || user.displayName || user.name;
+      const email = req.body?.email || user.email;
+      await recordUserAcknowledgedAnnouncement(id, user.uid, { displayName, email });
       res.json({ success: true, announcementId: id, uid: user.uid });
     } catch (err: any) {
       console.error(`[API /api/announcements/${req.params.id}/acknowledge] Error:`, err);

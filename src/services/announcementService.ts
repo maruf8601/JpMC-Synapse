@@ -12,12 +12,21 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  updateDoc,
+  deleteDoc,
   query,
   where,
   serverTimestamp,
+  Timestamp,
 } from 'firebase/firestore';
-import { AnnouncementEntity, AnnouncementReceipt } from '../domain/models';
+import {
+  AnnouncementEntity,
+  AnnouncementReceipt,
+  AnnouncementReceiptDetail,
+  AnnouncementReceiptsSummary,
+} from '../domain/models';
 import { getStoredUserSession } from './authService';
+import { toDateSafe, toIsoSafe } from '../utils/dateSafe';
 
 export async function getAuthToken(): Promise<string | undefined> {
   const currentUser = auth.currentUser;
@@ -30,6 +39,41 @@ export async function getAuthToken(): Promise<string | undefined> {
   }
   const stored = getStoredUserSession();
   return stored?.token;
+}
+
+function parseFirestoreAnnouncementDoc(docSnap: any): AnnouncementEntity {
+  const data = docSnap.data() || {};
+  const startDate =
+    toDateSafe(data.startAt) ||
+    toDateSafe(data.startDate) ||
+    toDateSafe(data.publishAt) ||
+    toDateSafe(data.createdAt) ||
+    new Date();
+  const expiresDate =
+    toDateSafe(data.expiresAt) ||
+    toDateSafe(data.endDate) ||
+    new Date(startDate.getTime() + 7 * 86400000);
+  const createdDate = toDateSafe(data.createdAt) || new Date();
+  const updatedDate = toDateSafe(data.updatedAt) || createdDate;
+  const pushSentDate = toDateSafe(data.pushSentAt);
+
+  return {
+    id: docSnap.id,
+    title: data.title || '',
+    message: data.message || '',
+    priority: data.priority || 'normal',
+    displayMode: data.displayMode || 'show_once',
+    targetAudience: data.targetAudience || 'everyone',
+    active: Boolean(data.active),
+    status: data.status || 'published',
+    startAt: startDate.toISOString(),
+    expiresAt: expiresDate.toISOString(),
+    sendPush: Boolean(data.sendPush),
+    pushSentAt: pushSentDate ? pushSentDate.toISOString() : null,
+    createdBy: data.createdBy || '',
+    createdAt: createdDate.toISOString(),
+    updatedAt: updatedDate.toISOString(),
+  };
 }
 
 /**
@@ -52,7 +96,24 @@ export async function fetchActiveAnnouncements(
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.announcements)) {
-        return json.announcements;
+        // Sanitize every item's date fields so no "Invalid Date" can leak
+        return json.announcements.map((item: any) => {
+          const startDate =
+            toDateSafe(item.startAt) ||
+            toDateSafe(item.startDate) ||
+            toDateSafe(item.publishAt) ||
+            toDateSafe(item.createdAt) ||
+            new Date();
+          const expiresDate =
+            toDateSafe(item.expiresAt) ||
+            toDateSafe(item.endDate) ||
+            new Date(startDate.getTime() + 7 * 86400000);
+          return {
+            ...item,
+            startAt: startDate.toISOString(),
+            expiresAt: expiresDate.toISOString(),
+          };
+        });
       }
     }
   } catch (err) {
@@ -71,32 +132,16 @@ export async function fetchActiveAnnouncements(
     const candidateList: AnnouncementEntity[] = [];
 
     snap.forEach((docSnap) => {
-      const data = docSnap.data();
-      const startMs = data.startAt?.toDate ? data.startAt.toDate().getTime() : new Date(data.startAt || 0).getTime();
-      const expiresMs = data.expiresAt?.toDate ? data.expiresAt.toDate().getTime() : new Date(data.expiresAt || Infinity).getTime();
+      const ann = parseFirestoreAnnouncementDoc(docSnap);
+      const startMs = new Date(ann.startAt).getTime();
+      const expiresMs = new Date(ann.expiresAt).getTime();
 
       if (now < startMs || now >= expiresMs) return;
 
-      if (data.targetAudience === 'admins_only' && role !== 'admin') return;
-      if (data.targetAudience === 'users_only' && role !== 'user') return;
+      if (ann.targetAudience === 'admins_only' && role !== 'admin') return;
+      if (ann.targetAudience === 'users_only' && role !== 'user') return;
 
-      candidateList.push({
-        id: docSnap.id,
-        title: data.title || '',
-        message: data.message || '',
-        priority: data.priority || 'normal',
-        displayMode: data.displayMode || 'show_once',
-        targetAudience: data.targetAudience || 'everyone',
-        active: Boolean(data.active),
-        status: data.status || 'published',
-        startAt: data.startAt?.toDate ? data.startAt.toDate().toISOString() : data.startAt,
-        expiresAt: data.expiresAt?.toDate ? data.expiresAt.toDate().toISOString() : data.expiresAt,
-        sendPush: Boolean(data.sendPush),
-        pushSentAt: data.pushSentAt?.toDate ? data.pushSentAt.toDate().toISOString() : data.pushSentAt,
-        createdBy: data.createdBy || '',
-        createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
-        updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
-      });
+      candidateList.push(ann);
     });
 
     const priorityWeight: Record<string, number> = { urgent: 1, important: 2, normal: 3 };
@@ -126,11 +171,17 @@ export async function getAnnouncementReceiptForUser(
     const snap = await getDoc(doc(db, 'announcementReceipts', receiptDocId));
     if (!snap.exists()) return null;
     const data = snap.data();
+    const seenDate = toDateSafe(data.seenAt) || toDateSafe(data.viewedAt);
+    const ackDate = toDateSafe(data.acknowledgedAt);
     return {
       announcementId,
       uid,
-      seenAt: data.seenAt?.toDate ? data.seenAt.toDate().toISOString() : data.seenAt,
-      acknowledgedAt: data.acknowledgedAt?.toDate ? data.acknowledgedAt.toDate().toISOString() : data.acknowledgedAt,
+      displayName: data.displayName,
+      email: data.email,
+      seenAt: seenDate ? seenDate.toISOString() : null,
+      viewedAt: seenDate ? seenDate.toISOString() : null,
+      acknowledgedAt: ackDate ? ackDate.toISOString() : null,
+      status: ackDate ? 'acknowledged' : 'viewed',
     };
   } catch (err) {
     console.warn('[Announcements] Failed to read receipt from Firestore:', err);
@@ -187,63 +238,117 @@ export async function getPendingAnnouncementsForUser(
 }
 
 /**
- * Records seen timestamp for an announcement
+ * Records seen timestamp for an announcement.
+ * Writes to Firestore and/or backend API. Throws only if both fail.
  */
-export async function recordAnnouncementSeen(announcementId: string, uid: string): Promise<void> {
+export async function recordAnnouncementSeen(
+  announcementId: string,
+  uid: string,
+  userData?: { displayName?: string; email?: string }
+): Promise<void> {
   const receiptDocId = `${announcementId}_${uid}`;
+  let firestoreSuccess = false;
+
   try {
-    await setDoc(
-      doc(db, 'announcementReceipts', receiptDocId),
-      {
-        announcementId,
-        uid,
-        seenAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch {
-    // API fallback
+    const payload: any = {
+      announcementId,
+      uid,
+      seenAt: serverTimestamp(),
+      viewedAt: serverTimestamp(),
+    };
+    if (userData?.displayName) payload.displayName = userData.displayName;
+    if (userData?.email) payload.email = userData.email;
+
+    await setDoc(doc(db, 'announcementReceipts', receiptDocId), payload, { merge: true });
+    firestoreSuccess = true;
+  } catch (err) {
+    console.warn('[Announcements] Direct Firestore seen record error, trying API fallback:', err);
+  }
+
+  // Also notify backend API
+  try {
     const token = await getAuthToken();
-    if (token) {
-      await apiFetch(`/api/announcements/${announcementId}/seen`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await apiFetch(`/api/announcements/${announcementId}/seen`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        displayName: userData?.displayName,
+        email: userData?.email,
+      }),
+    });
+    if (res.ok) {
+      return;
     }
+  } catch (apiErr) {
+    if (!firestoreSuccess) {
+      throw apiErr;
+    }
+  }
+
+  if (!firestoreSuccess) {
+    throw new Error('Failed to record seen status.');
   }
 }
 
 /**
- * Records explicit acknowledgement timestamp for an announcement
+ * Records explicit acknowledgement timestamp for an announcement.
+ * Writes to Firestore and/or backend API. Throws only if both fail.
+ * Strictly idempotent — repeated calls merge without duplication.
  */
-export async function recordAnnouncementAcknowledged(announcementId: string, uid: string): Promise<void> {
+export async function recordAnnouncementAcknowledged(
+  announcementId: string,
+  uid: string,
+  userData?: { displayName?: string; email?: string }
+): Promise<void> {
   const receiptDocId = `${announcementId}_${uid}`;
+  let firestoreSuccess = false;
+
   try {
-    await setDoc(
-      doc(db, 'announcementReceipts', receiptDocId),
-      {
-        announcementId,
-        uid,
-        seenAt: serverTimestamp(),
-        acknowledgedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch {
-    // API fallback
+    const payload: any = {
+      announcementId,
+      uid,
+      seenAt: serverTimestamp(),
+      viewedAt: serverTimestamp(),
+      acknowledgedAt: serverTimestamp(),
+      status: 'acknowledged',
+    };
+    if (userData?.displayName) payload.displayName = userData.displayName;
+    if (userData?.email) payload.email = userData.email;
+
+    await setDoc(doc(db, 'announcementReceipts', receiptDocId), payload, { merge: true });
+    firestoreSuccess = true;
+  } catch (err) {
+    console.warn('[Announcements] Direct Firestore acknowledgement error, trying API fallback:', err);
+  }
+
+  // Also call backend API
+  try {
     const token = await getAuthToken();
-    if (token) {
-      await apiFetch(`/api/announcements/${announcementId}/acknowledge`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await apiFetch(`/api/announcements/${announcementId}/acknowledge`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        displayName: userData?.displayName,
+        email: userData?.email,
+      }),
+    });
+    if (res.ok) {
+      return;
     }
+  } catch (apiErr) {
+    if (!firestoreSuccess) {
+      throw apiErr;
+    }
+  }
+
+  if (!firestoreSuccess) {
+    throw new Error('স্বীকৃতি সংরক্ষণ করা যায়নি। অনুগ্রহ করে সংযোগ পরীক্ষা করে পুনরায় চেষ্টা করুন।');
   }
 }
 
@@ -256,13 +361,47 @@ export async function fetchAdminAnnouncements(): Promise<AnnouncementEntity[]> {
   const headers: HeadersInit = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await apiFetch('/api/admin/announcements', { headers });
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(errorText || 'Failed to fetch admin announcements');
+  try {
+    const res = await apiFetch('/api/admin/announcements', { headers });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.announcements)) {
+        return json.announcements.map((item: any) => {
+          const startDate =
+            toDateSafe(item.startAt) ||
+            toDateSafe(item.startDate) ||
+            toDateSafe(item.publishAt) ||
+            toDateSafe(item.createdAt) ||
+            new Date();
+          const expiresDate =
+            toDateSafe(item.expiresAt) ||
+            toDateSafe(item.endDate) ||
+            new Date(startDate.getTime() + 7 * 86400000);
+          return {
+            ...item,
+            startAt: startDate.toISOString(),
+            expiresAt: expiresDate.toISOString(),
+          };
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[Announcements] Admin API fetch failed, falling back to direct Firestore:', err);
   }
-  const json = await res.json();
-  return json.announcements || [];
+
+  // Fallback to direct Firestore for admin user
+  try {
+    const snap = await getDocs(collection(db, 'announcements'));
+    const list: AnnouncementEntity[] = [];
+    snap.forEach((docSnap) => {
+      list.push(parseFirestoreAnnouncementDoc(docSnap));
+    });
+    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return list;
+  } catch (fErr) {
+    console.error('[Announcements] Direct Firestore fallback for admin failed:', fErr);
+    throw new Error('বিজ্ঞপ্তি তালিকা লোড করা যায়নি।');
+  }
 }
 
 export async function createAdminAnnouncement(
@@ -272,19 +411,59 @@ export async function createAdminAnnouncement(
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await apiFetch('/api/admin/announcements', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
+  const cleanPayload = {
+    ...payload,
+    startAt: toIsoSafe(payload.startAt),
+    expiresAt: toIsoSafe(payload.expiresAt, new Date(Date.now() + 7 * 86400000).toISOString()),
+  };
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Creation failed' }));
-    throw new Error(error.error || 'Failed to create announcement');
+  try {
+    const res = await apiFetch('/api/admin/announcements', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(cleanPayload),
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      return json.announcement;
+    }
+  } catch (err) {
+    console.warn('[Announcements] API creation failed, attempting direct Firestore:', err);
   }
 
-  const json = await res.json();
-  return json.announcement;
+  // Fallback direct Firestore create
+  try {
+    const user = auth.currentUser;
+    const adminUid = user?.uid || 'admin';
+    const newDocRef = doc(collection(db, 'announcements'));
+    const startD = toDateSafe(cleanPayload.startAt) || new Date();
+    const expD = toDateSafe(cleanPayload.expiresAt) || new Date(Date.now() + 7 * 86400000);
+
+    const docData = {
+      title: cleanPayload.title.trim(),
+      message: cleanPayload.message.trim(),
+      priority: cleanPayload.priority || 'normal',
+      displayMode: cleanPayload.displayMode || 'show_once',
+      targetAudience: cleanPayload.targetAudience || 'everyone',
+      active: cleanPayload.active !== false,
+      status: cleanPayload.status || 'draft',
+      startAt: Timestamp.fromDate(startD),
+      expiresAt: Timestamp.fromDate(expD),
+      sendPush: Boolean(cleanPayload.sendPush),
+      pushSentAt: null,
+      createdBy: adminUid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    await setDoc(newDocRef, docData);
+    const createdSnap = await getDoc(newDocRef);
+    return parseFirestoreAnnouncementDoc(createdSnap);
+  } catch (fallbackErr: any) {
+    console.error('[Announcements] Direct Firestore creation failed:', fallbackErr);
+    throw new Error(fallbackErr?.message || 'Failed to create announcement');
+  }
 }
 
 export async function updateAdminAnnouncement(
@@ -295,19 +474,58 @@ export async function updateAdminAnnouncement(
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await apiFetch(`/api/admin/announcements/${id}`, {
-    method: 'PUT',
-    headers,
-    body: JSON.stringify(payload),
-  });
+  const cleanPayload = {
+    ...payload,
+    ...(payload.startAt ? { startAt: toIsoSafe(payload.startAt) } : {}),
+    ...(payload.expiresAt ? { expiresAt: toIsoSafe(payload.expiresAt) } : {}),
+  };
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Update failed' }));
-    throw new Error(error.error || 'Failed to update announcement');
+  try {
+    const res = await apiFetch(`/api/admin/announcements/${id}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(cleanPayload),
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      return json.announcement;
+    }
+  } catch (err) {
+    console.warn(`[Announcements] API update for ${id} failed, attempting direct Firestore:`, err);
   }
 
-  const json = await res.json();
-  return json.announcement;
+  // Fallback direct Firestore update
+  try {
+    const docRef = doc(db, 'announcements', id);
+    const updateData: Record<string, any> = {
+      updatedAt: serverTimestamp(),
+    };
+
+    if (cleanPayload.title !== undefined) updateData.title = cleanPayload.title.trim();
+    if (cleanPayload.message !== undefined) updateData.message = cleanPayload.message.trim();
+    if (cleanPayload.priority !== undefined) updateData.priority = cleanPayload.priority;
+    if (cleanPayload.displayMode !== undefined) updateData.displayMode = cleanPayload.displayMode;
+    if (cleanPayload.targetAudience !== undefined) updateData.targetAudience = cleanPayload.targetAudience;
+    if (cleanPayload.active !== undefined) updateData.active = cleanPayload.active;
+    if (cleanPayload.status !== undefined) updateData.status = cleanPayload.status;
+    if (cleanPayload.startAt !== undefined) {
+      const d = toDateSafe(cleanPayload.startAt);
+      if (d) updateData.startAt = Timestamp.fromDate(d);
+    }
+    if (cleanPayload.expiresAt !== undefined) {
+      const d = toDateSafe(cleanPayload.expiresAt);
+      if (d) updateData.expiresAt = Timestamp.fromDate(d);
+    }
+    if (cleanPayload.sendPush !== undefined) updateData.sendPush = Boolean(cleanPayload.sendPush);
+
+    await updateDoc(docRef, updateData);
+    const updatedSnap = await getDoc(docRef);
+    return parseFirestoreAnnouncementDoc(updatedSnap);
+  } catch (fallbackErr: any) {
+    console.error('[Announcements] Direct Firestore update failed:', fallbackErr);
+    throw new Error(fallbackErr?.message || 'Failed to update announcement');
+  }
 }
 
 export async function deleteAdminAnnouncement(id: string): Promise<boolean> {
@@ -315,55 +533,40 @@ export async function deleteAdminAnnouncement(id: string): Promise<boolean> {
   const headers: HeadersInit = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await apiFetch(`/api/admin/announcements/${id}`, {
-    method: 'DELETE',
-    headers,
-  });
+  try {
+    const res = await apiFetch(`/api/admin/announcements/${id}`, {
+      method: 'DELETE',
+      headers,
+    });
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Delete failed' }));
-    throw new Error(error.error || 'Failed to delete announcement');
+    if (res.ok) {
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[Announcements] API delete for ${id} failed, attempting direct Firestore delete:`, err);
   }
 
-  return true;
+  try {
+    await deleteDoc(doc(db, 'announcements', id));
+    return true;
+  } catch (err) {
+    console.error('[Announcements] Direct Firestore delete failed:', err);
+    throw new Error('বিজ্ঞপ্তি ডিলিট করতে সমস্যা হয়েছে।');
+  }
 }
 
 export async function publishAdminAnnouncement(id: string): Promise<AnnouncementEntity> {
-  const token = await getAuthToken();
-  const headers: HeadersInit = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await apiFetch(`/api/admin/announcements/${id}/publish`, {
-    method: 'POST',
-    headers,
+  return updateAdminAnnouncement(id, {
+    status: 'published',
+    active: true,
   });
-
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Publish failed' }));
-    throw new Error(error.error || 'Failed to publish announcement');
-  }
-
-  const json = await res.json();
-  return json.announcement;
 }
 
 export async function unpublishAdminAnnouncement(id: string): Promise<AnnouncementEntity> {
-  const token = await getAuthToken();
-  const headers: HeadersInit = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await apiFetch(`/api/admin/announcements/${id}/unpublish`, {
-    method: 'POST',
-    headers,
+  return updateAdminAnnouncement(id, {
+    status: 'draft',
+    active: false,
   });
-
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Unpublish failed' }));
-    throw new Error(error.error || 'Failed to unpublish announcement');
-  }
-
-  const json = await res.json();
-  return json.announcement;
 }
 
 export async function sendAdminAnnouncementPush(
@@ -386,4 +589,88 @@ export async function sendAdminAnnouncementPush(
   }
 
   return await res.json();
+}
+
+/**
+ * Fetches the user acknowledgement and view receipts for an announcement (Admin only).
+ * Handles API fetch with direct Firestore fallback.
+ */
+export async function fetchAdminAnnouncementReceipts(
+  announcementId: string
+): Promise<AnnouncementReceiptsSummary> {
+  const token = await getAuthToken();
+  const headers: HeadersInit = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const res = await apiFetch(`/api/admin/announcements/${announcementId}/receipts`, {
+      headers,
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success) {
+        return {
+          announcementId: json.announcementId,
+          totalAuthorizedUsers: json.totalAuthorizedUsers ?? null,
+          viewedCount: json.viewedCount || 0,
+          acknowledgedCount: json.acknowledgedCount || 0,
+          unseenCount: json.unseenCount ?? null,
+          receipts: json.receipts || [],
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`[Announcements] API receipts fetch for ${announcementId} failed, falling back:`, err);
+  }
+
+  // Fallback to direct client Firestore query for admin
+  try {
+    const q = query(
+      collection(db, 'announcementReceipts'),
+      where('announcementId', '==', announcementId)
+    );
+    const snap = await getDocs(q);
+    const receipts: AnnouncementReceiptDetail[] = [];
+    let viewedCount = 0;
+    let acknowledgedCount = 0;
+
+    snap.forEach((d) => {
+      const data = d.data();
+      const uid = data.uid || (d.id.startsWith(`${announcementId}_`) ? d.id.slice(announcementId.length + 1) : d.id);
+      const isAck = Boolean(data.acknowledgedAt);
+      if (isAck) acknowledgedCount++;
+      viewedCount++;
+
+      const viewedDate = toDateSafe(data.viewedAt) || toDateSafe(data.seenAt);
+      const ackDate = toDateSafe(data.acknowledgedAt);
+
+      receipts.push({
+        uid,
+        displayName: data.displayName || `ব্যবহারকারী (${uid.slice(0, 6)})`,
+        email: data.email || null,
+        role: data.role || 'user',
+        viewedAt: viewedDate ? viewedDate.toISOString() : (ackDate ? ackDate.toISOString() : null),
+        acknowledgedAt: ackDate ? ackDate.toISOString() : null,
+        status: isAck ? 'acknowledged' : 'viewed',
+      });
+    });
+
+    receipts.sort((a, b) => {
+      const timeA = toDateSafe(a.acknowledgedAt)?.getTime() || toDateSafe(a.viewedAt)?.getTime() || 0;
+      const timeB = toDateSafe(b.acknowledgedAt)?.getTime() || toDateSafe(b.viewedAt)?.getTime() || 0;
+      return timeB - timeA;
+    });
+
+    return {
+      announcementId,
+      totalAuthorizedUsers: null,
+      viewedCount,
+      acknowledgedCount,
+      unseenCount: null,
+      receipts,
+    };
+  } catch (fErr) {
+    console.error('[Announcements] Direct Firestore fallback for receipts failed:', fErr);
+    throw new Error('স্বীকৃতি ও ভিউ ডেটা লোড করা যায়নি।');
+  }
 }

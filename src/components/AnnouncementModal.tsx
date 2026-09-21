@@ -7,6 +7,9 @@
 import React, { useState } from 'react';
 import { AnnouncementEntity } from '../domain/models';
 import { recordAnnouncementSeen, recordAnnouncementAcknowledged } from '../services/announcementService';
+import { auth } from '../services/firebaseClient';
+import { getStoredUserSession } from '../services/authService';
+import { formatDhakaDate, formatDhakaDateTime } from '../utils/dateSafe';
 import {
   AlertTriangle,
   AlertCircle,
@@ -32,6 +35,7 @@ export const AnnouncementModal: React.FC<AnnouncementModalProps> = ({
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   if (!queue || queue.length === 0 || currentIndex >= queue.length) {
     return null;
@@ -41,30 +45,42 @@ export const AnnouncementModal: React.FC<AnnouncementModalProps> = ({
   const totalCount = queue.length;
   const isRequireAck = announcement.displayMode === 'require_acknowledgement';
 
-  const formatDhakaDate = (isoStr?: string) => {
-    if (!isoStr) return '';
-    try {
-      return new Date(isoStr).toLocaleDateString('bn-BD', {
-        timeZone: 'Asia/Dhaka',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      });
-    } catch {
-      return isoStr;
-    }
+  const getEffectiveUser = () => {
+    const firebaseUser = auth.currentUser;
+    const storedSession = getStoredUserSession();
+    const effectiveUid =
+      userId ||
+      firebaseUser?.uid ||
+      storedSession?.user?.uid ||
+      storedSession?.user?.email;
+    const displayName =
+      firebaseUser?.displayName ||
+      storedSession?.user?.displayName ||
+      storedSession?.user?.email ||
+      undefined;
+    const email = firebaseUser?.email || storedSession?.user?.email || undefined;
+    return { uid: effectiveUid, displayName, email };
   };
 
   const handleNextOrFinish = async (isAckAction: boolean) => {
     if (isSubmitting) return;
     setIsSubmitting(true);
+    setActionError(null);
+
+    const user = getEffectiveUser();
 
     try {
-      if (userId) {
+      if (user.uid) {
         if (isRequireAck || isAckAction) {
-          await recordAnnouncementAcknowledged(announcement.id, userId);
+          await recordAnnouncementAcknowledged(announcement.id, user.uid, {
+            displayName: user.displayName,
+            email: user.email,
+          });
         } else {
-          await recordAnnouncementSeen(announcement.id, userId);
+          await recordAnnouncementSeen(announcement.id, user.uid, {
+            displayName: user.displayName,
+            email: user.email,
+          });
         }
       }
 
@@ -80,12 +96,17 @@ export const AnnouncementModal: React.FC<AnnouncementModalProps> = ({
       } else {
         onDismiss();
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('[AnnouncementModal] Error saving acknowledgement:', err);
-      if (currentIndex + 1 < totalCount) {
-        setCurrentIndex((prev) => prev + 1);
+      // For mandatory acknowledgement, notify user if write failed so they can retry
+      if (isRequireAck) {
+        setActionError(err?.message || 'স্বীকৃতি সংরক্ষণ করা সম্ভব হয়নি। অনুগ্রহ করে পুনরায় চেষ্টা করুন।');
       } else {
-        onDismiss();
+        if (currentIndex + 1 < totalCount) {
+          setCurrentIndex((prev) => prev + 1);
+        } else {
+          onDismiss();
+        }
       }
     } finally {
       setIsSubmitting(false);
@@ -212,6 +233,13 @@ export const AnnouncementModal: React.FC<AnnouncementModalProps> = ({
               <span>
                 কর্তৃপক্ষ এই বিজ্ঞপ্তির জন্য আপনার সচেতন সম্মতি ও পাঠের স্বীকৃতি নিশ্চিত করতে নির্দেশ দিয়েছেন।
               </span>
+            </div>
+          )}
+
+          {actionError && (
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-xs text-red-700 dark:text-red-300 font-bengali">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{actionError}</span>
             </div>
           )}
         </div>

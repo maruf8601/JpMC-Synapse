@@ -142,11 +142,43 @@ export interface AnnouncementEntity {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  // Optional legacy date fields support
+  startDate?: string;
+  endDate?: string;
+  publishAt?: string;
+  // Optional statistics for admin views
+  stats?: {
+    viewedCount: number;
+    acknowledgedCount: number;
+  };
 }
 
 export interface AnnouncementReceipt {
   announcementId: string;
   uid: string;
-  seenAt: string;
+  displayName?: string;
+  email?: string | null;
+  seenAt?: string | null;
+  viewedAt?: string | null;
   acknowledgedAt?: string | null;
+  status?: 'viewed' | 'acknowledged';
+}
+
+export interface AnnouncementReceiptDetail {
+  uid: string;
+  displayName: string;
+  email: string | null;
+  role?: string;
+  viewedAt: string | null;
+  acknowledgedAt: string | null;
+  status: 'acknowledged' | 'viewed';
+}
+
+export interface AnnouncementReceiptsSummary {
+  announcementId: string;
+  totalAuthorizedUsers: number | null;
+  viewedCount: number;
+  acknowledgedCount: number;
+  unseenCount?: number | null;
+  receipts: AnnouncementReceiptDetail[];
 }

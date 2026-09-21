@@ -7,23 +7,34 @@
 import { adminDb, removeUndefinedFields, getActiveDevices } from './firebaseAdmin';
 import { sendFcmPushNotification } from './reminderScheduler';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { AnnouncementEntity, AnnouncementReceipt } from '../domain/models';
+import {
+  AnnouncementEntity,
+  AnnouncementReceipt,
+  AnnouncementReceiptDetail,
+  AnnouncementReceiptsSummary,
+} from '../domain/models';
+import { toDateSafe, toIsoSafe } from '../utils/dateSafe';
 
 function toTimestamp(val: any): Timestamp {
-  if (!val) return Timestamp.now();
-  if (val instanceof Timestamp) return val;
-  if (typeof val?.toDate === 'function') return val;
-  const d = new Date(val);
-  return isNaN(d.getTime()) ? Timestamp.now() : Timestamp.fromDate(d);
+  const d = toDateSafe(val);
+  return d ? Timestamp.fromDate(d) : Timestamp.now();
 }
 
 export function serializeAnnouncement(doc: any): AnnouncementEntity {
   const data = doc.data() || {};
-  const startAt = data.startAt?.toDate ? data.startAt.toDate().toISOString() : data.startAt || new Date().toISOString();
-  const expiresAt = data.expiresAt?.toDate ? data.expiresAt.toDate().toISOString() : data.expiresAt || new Date(Date.now() + 7 * 86400000).toISOString();
-  const createdAt = data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString();
-  const updatedAt = data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString();
-  const pushSentAt = data.pushSentAt?.toDate ? data.pushSentAt.toDate().toISOString() : data.pushSentAt || null;
+  const startDate =
+    toDateSafe(data.startAt) ||
+    toDateSafe(data.startDate) ||
+    toDateSafe(data.publishAt) ||
+    toDateSafe(data.createdAt) ||
+    new Date();
+  const expiresDate =
+    toDateSafe(data.expiresAt) ||
+    toDateSafe(data.endDate) ||
+    new Date(startDate.getTime() + 7 * 86400000);
+  const createdDate = toDateSafe(data.createdAt) || new Date();
+  const updatedDate = toDateSafe(data.updatedAt) || createdDate;
+  const pushSentDate = toDateSafe(data.pushSentAt);
 
   return {
     id: doc.id,
@@ -34,13 +45,13 @@ export function serializeAnnouncement(doc: any): AnnouncementEntity {
     targetAudience: data.targetAudience || 'everyone',
     active: data.active !== false,
     status: data.status || 'draft',
-    startAt,
-    expiresAt,
+    startAt: startDate.toISOString(),
+    expiresAt: expiresDate.toISOString(),
     sendPush: Boolean(data.sendPush),
-    pushSentAt,
+    pushSentAt: pushSentDate ? pushSentDate.toISOString() : null,
     createdBy: data.createdBy || '',
-    createdAt,
-    updatedAt,
+    createdAt: createdDate.toISOString(),
+    updatedAt: updatedDate.toISOString(),
   };
 }
 
@@ -140,6 +151,31 @@ export async function getAllAnnouncementsForAdmin(): Promise<AnnouncementEntity[
       list.push(serializeAnnouncement(doc));
     });
 
+    // Attach receipt stats to each announcement
+    try {
+      const receiptsSnap = await adminDb.collection('announcementReceipts').get();
+      const statsMap = new Map<string, { viewedCount: number; acknowledgedCount: number }>();
+      receiptsSnap.forEach((rDoc) => {
+        const rData = rDoc.data();
+        const aId = rData.announcementId || (rDoc.id.includes('_') ? rDoc.id.split('_')[0] : null);
+        if (!aId) return;
+        if (!statsMap.has(aId)) {
+          statsMap.set(aId, { viewedCount: 0, acknowledgedCount: 0 });
+        }
+        const entry = statsMap.get(aId)!;
+        entry.viewedCount++;
+        if (rData.acknowledgedAt) {
+          entry.acknowledgedCount++;
+        }
+      });
+
+      for (const ann of list) {
+        ann.stats = statsMap.get(ann.id) || { viewedCount: 0, acknowledgedCount: 0 };
+      }
+    } catch (err) {
+      console.warn('[Announcements] Failed to attach receipts stats:', err);
+    }
+
     list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return list;
   } catch (err) {
@@ -218,43 +254,199 @@ export async function getAnnouncementReceipt(
   const snap = await adminDb.collection('announcementReceipts').doc(docId).get();
   if (!snap.exists) return null;
   const data = snap.data() || {};
+  const seenDate = toDateSafe(data.seenAt) || toDateSafe(data.viewedAt);
+  const ackDate = toDateSafe(data.acknowledgedAt);
+
   return {
     announcementId,
     uid,
-    seenAt: data.seenAt?.toDate ? data.seenAt.toDate().toISOString() : data.seenAt,
-    acknowledgedAt: data.acknowledgedAt?.toDate ? data.acknowledgedAt.toDate().toISOString() : data.acknowledgedAt,
+    displayName: data.displayName,
+    email: data.email,
+    seenAt: seenDate ? seenDate.toISOString() : null,
+    viewedAt: seenDate ? seenDate.toISOString() : null,
+    acknowledgedAt: ackDate ? ackDate.toISOString() : null,
+    status: ackDate ? 'acknowledged' : 'viewed',
   };
 }
 
 /**
  * Record seen status for user
  */
-export async function recordUserSeenAnnouncement(announcementId: string, uid: string): Promise<void> {
+export async function recordUserSeenAnnouncement(
+  announcementId: string,
+  uid: string,
+  userData?: { displayName?: string; email?: string }
+): Promise<void> {
   const docId = `${announcementId}_${uid}`;
-  await adminDb.collection('announcementReceipts').doc(docId).set(
-    {
-      announcementId,
-      uid,
-      seenAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const nowTs = FieldValue.serverTimestamp();
+  const payload: Record<string, any> = {
+    announcementId,
+    uid,
+    seenAt: nowTs,
+    viewedAt: nowTs,
+  };
+  if (userData?.displayName) payload.displayName = userData.displayName;
+  if (userData?.email) payload.email = userData.email;
+
+  await adminDb.collection('announcementReceipts').doc(docId).set(payload, { merge: true });
 }
 
 /**
  * Record explicit acknowledgement for user
  */
-export async function recordUserAcknowledgedAnnouncement(announcementId: string, uid: string): Promise<void> {
+export async function recordUserAcknowledgedAnnouncement(
+  announcementId: string,
+  uid: string,
+  userData?: { displayName?: string; email?: string }
+): Promise<void> {
   const docId = `${announcementId}_${uid}`;
-  await adminDb.collection('announcementReceipts').doc(docId).set(
-    {
-      announcementId,
+  const nowTs = FieldValue.serverTimestamp();
+  const payload: Record<string, any> = {
+    announcementId,
+    uid,
+    seenAt: nowTs,
+    viewedAt: nowTs,
+    acknowledgedAt: nowTs,
+    status: 'acknowledged',
+  };
+  if (userData?.displayName) payload.displayName = userData.displayName;
+  if (userData?.email) payload.email = userData.email;
+
+  await adminDb.collection('announcementReceipts').doc(docId).set(payload, { merge: true });
+}
+
+/**
+ * Retrieves the full list of receipts and summary for an announcement (Admin only)
+ */
+export async function getAnnouncementReceiptsForAdmin(
+  announcementId: string
+): Promise<AnnouncementReceiptsSummary> {
+  const receiptsMap = new Map<string, any>();
+
+  // 1. Query receipts matching announcementId
+  try {
+    const qSnap = await adminDb
+      .collection('announcementReceipts')
+      .where('announcementId', '==', announcementId)
+      .get();
+
+    qSnap.forEach((doc) => {
+      const data = doc.data();
+      const uid =
+        data.uid ||
+        (doc.id.startsWith(`${announcementId}_`)
+          ? doc.id.slice(announcementId.length + 1)
+          : doc.id);
+      receiptsMap.set(uid, { id: doc.id, ...data, uid });
+    });
+  } catch (err) {
+    console.warn('[Announcements] Query by announcementId failed, falling back:', err);
+  }
+
+  // Also scan if doc id format prefix matches
+  if (receiptsMap.size === 0) {
+    try {
+      const allReceiptsSnap = await adminDb.collection('announcementReceipts').get();
+      allReceiptsSnap.forEach((doc) => {
+        const data = doc.data();
+        const matchesField = data.announcementId === announcementId;
+        const matchesDocId = doc.id.startsWith(`${announcementId}_`);
+        if (matchesField || matchesDocId) {
+          const uid =
+            data.uid ||
+            (matchesDocId ? doc.id.slice(announcementId.length + 1) : doc.id);
+          receiptsMap.set(uid, { id: doc.id, ...data, uid });
+        }
+      });
+    } catch (err) {
+      console.warn('[Announcements] Fallback scanning announcementReceipts failed:', err);
+    }
+  }
+
+  // 2. Load user roster from authorizedUsers for display names, emails, and accurate total count
+  let totalAuthorizedUsers: number | null = null;
+  const usersRoster = new Map<string, { displayName: string; email: string | null; role?: string }>();
+
+  try {
+    const usersSnap = await adminDb.collection('authorizedUsers').get();
+    let activeCount = 0;
+    usersSnap.forEach((uDoc) => {
+      const uData = uDoc.data();
+      if (uData.active !== false) {
+        activeCount++;
+      }
+      usersRoster.set(uDoc.id, {
+        displayName:
+          uData.displayName ||
+          uData.name ||
+          (uData.email ? uData.email.split('@')[0] : 'ইউজার'),
+        email: uData.email || null,
+        role: uData.role || 'user',
+      });
+    });
+    totalAuthorizedUsers = activeCount > 0 ? activeCount : null;
+  } catch (err) {
+    console.warn('[Announcements] Could not load authorizedUsers for roster count:', err);
+  }
+
+  // 3. Build receipt details
+  const receipts: AnnouncementReceiptDetail[] = [];
+  let viewedCount = 0;
+  let acknowledgedCount = 0;
+
+  receiptsMap.forEach((rData, uid) => {
+    const userInfo = usersRoster.get(uid);
+    const displayName =
+      rData.displayName ||
+      userInfo?.displayName ||
+      (rData.email ? rData.email.split('@')[0] : `ব্যবহারকারী (${uid.slice(0, 6)})`);
+    const email = rData.email || userInfo?.email || null;
+    const role = rData.role || userInfo?.role || 'user';
+
+    const viewedDate = toDateSafe(rData.viewedAt) || toDateSafe(rData.seenAt);
+    const ackDate = toDateSafe(rData.acknowledgedAt);
+
+    const isAck = Boolean(ackDate);
+    if (isAck) {
+      acknowledgedCount++;
+    }
+    viewedCount++;
+
+    receipts.push({
       uid,
-      seenAt: FieldValue.serverTimestamp(),
-      acknowledgedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+      displayName,
+      email,
+      role,
+      viewedAt: viewedDate ? viewedDate.toISOString() : (ackDate ? ackDate.toISOString() : null),
+      acknowledgedAt: ackDate ? ackDate.toISOString() : null,
+      status: isAck ? 'acknowledged' : 'viewed',
+    });
+  });
+
+  // Sort: newest acknowledgedAt first, then newest viewedAt first
+  receipts.sort((a, b) => {
+    const timeA =
+      toDateSafe(a.acknowledgedAt)?.getTime() ||
+      toDateSafe(a.viewedAt)?.getTime() ||
+      0;
+    const timeB =
+      toDateSafe(b.acknowledgedAt)?.getTime() ||
+      toDateSafe(b.viewedAt)?.getTime() ||
+      0;
+    return timeB - timeA;
+  });
+
+  const unseenCount =
+    totalAuthorizedUsers !== null ? Math.max(0, totalAuthorizedUsers - viewedCount) : null;
+
+  return {
+    announcementId,
+    totalAuthorizedUsers,
+    viewedCount,
+    acknowledgedCount,
+    unseenCount,
+    receipts,
+  };
 }
 
 /**
