@@ -12,7 +12,7 @@ import { Capacitor } from '@capacitor/core';
  */
 
 export const RENDER_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.onrender.com';
-export const CLOUDFLARE_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.workers.dev';
+export const CLOUDFLARE_PRODUCTION_BACKEND_URL = 'https://jpmc-synapse.marufjb.workers.dev';
 
 // Default backend target can be toggled via VITE_API_TARGET ('cloudflare' | 'render') or VITE_API_URL.
 // Defaults to Cloudflare Workers for modern deployments.
@@ -20,6 +20,17 @@ export const DEFAULT_PRODUCTION_BACKEND_URL =
   ((import.meta as any).env?.VITE_API_TARGET === 'render')
     ? RENDER_PRODUCTION_BACKEND_URL
     : CLOUDFLARE_PRODUCTION_BACKEND_URL;
+
+export function getTelegramWebhookUrl(): string {
+  if (Capacitor.isNativePlatform()) {
+    const base = getApiBaseUrl() || CLOUDFLARE_PRODUCTION_BACKEND_URL;
+    return `${base}/api/telegram/webhook`;
+  }
+  if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
+    return `${window.location.origin}/api/telegram/webhook`;
+  }
+  return `${CLOUDFLARE_PRODUCTION_BACKEND_URL}/api/telegram/webhook`;
+}
 
 export function getApiBaseUrl(): string {
   // 1. Native Capacitor runtime (Android / iOS APK)
@@ -101,7 +112,7 @@ export async function fetchTelegramStatus(): Promise<SafeTelegramStatus> {
       const data = await res.json();
       return {
         configured: Boolean(data.configured),
-        webhookUrl: data.webhookUrl || `${DEFAULT_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
+        webhookUrl: data.webhookUrl || getTelegramWebhookUrl(),
         status: data.configured ? 'active' : 'pending_configuration',
         processedCount: typeof data.processedCount === 'number' ? data.processedCount : (data.totalMessagesReceived || 0),
         totalMessagesReceived: typeof data.totalMessagesReceived === 'number' ? data.totalMessagesReceived : (data.processedCount || 0),
@@ -114,7 +125,7 @@ export async function fetchTelegramStatus(): Promise<SafeTelegramStatus> {
 
   return {
     configured: false,
-    webhookUrl: `${DEFAULT_PRODUCTION_BACKEND_URL}/api/telegram/webhook`,
+    webhookUrl: getTelegramWebhookUrl(),
     status: 'pending_configuration',
     processedCount: 0,
     totalMessagesReceived: 0,

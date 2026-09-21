@@ -301,6 +301,17 @@ async function startServer() {
     });
   });
 
+  // Safe configuration status endpoint (NEVER returns secret values)
+  app.get('/api/config/status', (req, res) => {
+    res.json({
+      runtime: 'node-render',
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      staffAccessConfigured: Boolean(process.env.STAFF_ACCESS_CODE),
+      firebaseConfigured: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_PROJECT_ID),
+    });
+  });
+
   // Server-side Gemini Event Extraction Endpoint
   app.post('/api/extract-events', async (req, res) => {
     try {

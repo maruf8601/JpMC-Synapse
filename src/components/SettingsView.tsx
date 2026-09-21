@@ -45,11 +45,14 @@ import {
   DevicePushStatus,
 } from '../services/pushNotificationService';
 import { eventRepository } from '../data/eventRepository';
+import { Capacitor } from '@capacitor/core';
 import {
   apiFetch,
   apiUrl,
   fetchTelegramStatus,
   RENDER_PRODUCTION_BACKEND_URL,
+  CLOUDFLARE_PRODUCTION_BACKEND_URL,
+  getApiBaseUrl,
 } from '../config/api';
 
 interface SettingsViewProps {
@@ -96,28 +99,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   });
 
   const derivePublicWebhookUrl = (serverWebhookUrl?: string): string => {
-    // 1. If server already provided a valid non-localhost URL, use it
-    if (serverWebhookUrl && !serverWebhookUrl.includes('localhost') && !serverWebhookUrl.includes('127.0.0.1')) {
-      return serverWebhookUrl;
+    // 1. In native Capacitor (Android APK), use configured backend API base
+    if (Capacitor.isNativePlatform()) {
+      const apiBase = getApiBaseUrl();
+      if (apiBase) {
+        return `${apiBase}/api/telegram/webhook`;
+      }
+      return `${CLOUDFLARE_PRODUCTION_BACKEND_URL}/api/telegram/webhook`;
     }
 
-    // 2. Client-side environment variable (if provided)
-    const envPublicUrl = (import.meta as any).env?.VITE_PUBLIC_APP_URL || (import.meta as any).env?.VITE_APP_URL;
-    if (envPublicUrl && !envPublicUrl.includes('localhost') && !envPublicUrl.includes('127.0.0.1')) {
-      return `${envPublicUrl.replace(/\/$/, '')}/api/telegram/webhook`;
-    }
-
-    // 3. If running in browser and the origin is not localhost (e.g., deployed domain or Cloud Run)
+    // 2. In browser on web (Cloudflare Worker, local dev, custom domain), always derive from current window origin
     if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
       return `${window.location.origin}/api/telegram/webhook`;
     }
 
-    // 4. Default canonical production Render URL if valid
-    if (RENDER_PRODUCTION_BACKEND_URL && !RENDER_PRODUCTION_BACKEND_URL.includes('localhost') && !RENDER_PRODUCTION_BACKEND_URL.includes('127.0.0.1')) {
-      return `${RENDER_PRODUCTION_BACKEND_URL}/api/telegram/webhook`;
+    // 3. If server already provided a valid non-localhost URL (and not the outdated .workers.dev without subdomain), use it
+    if (
+      serverWebhookUrl &&
+      !serverWebhookUrl.includes('localhost') &&
+      !serverWebhookUrl.includes('127.0.0.1') &&
+      !serverWebhookUrl.includes('https://jpmc-synapse.workers.dev')
+    ) {
+      return serverWebhookUrl;
     }
 
-    return '';
+    // 4. Default production Cloudflare URL
+    return `${CLOUDFLARE_PRODUCTION_BACKEND_URL}/api/telegram/webhook`;
   };
 
   // Gemini AI real status
@@ -159,41 +166,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Load live server statuses
   useEffect(() => {
-    // 1. Fetch Telegram Bot status directly from server API (supports native Capacitor & web)
+    // 1. Fetch safe server config status (/api/config/status)
+    apiFetch('/api/config/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((cfg) => {
+        if (cfg) {
+          if (typeof cfg.geminiConfigured === 'boolean') {
+            setGeminiStatus((prev) => ({
+              ...prev,
+              configured: cfg.geminiConfigured,
+            }));
+          }
+          if (typeof cfg.telegramConfigured === 'boolean') {
+            setTelegramStatus((prev) => ({
+              ...prev,
+              configured: cfg.telegramConfigured,
+            }));
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('[Settings] Failed to fetch /api/config/status:', err);
+      });
+
+    // 2. Fetch Telegram Bot status (counts, message timestamp)
     fetchTelegramStatus()
       .then((tgData) => {
-        setTelegramStatus({
-          configured: tgData.configured,
+        setTelegramStatus((prev) => ({
+          configured: typeof tgData.configured === 'boolean' ? (tgData.configured || prev.configured) : prev.configured,
           webhookUrl: derivePublicWebhookUrl(tgData.webhookUrl),
-          totalMessagesReceived: tgData.totalMessagesReceived || tgData.processedCount || 0,
-          lastReceived: tgData.lastReceived || null,
-        });
+          totalMessagesReceived: tgData.totalMessagesReceived || tgData.processedCount || prev.totalMessagesReceived,
+          lastReceived: tgData.lastReceived || prev.lastReceived,
+        }));
       })
       .catch((err) => {
         console.warn('[Settings] Telegram status notice:', err);
       });
 
-    // 2. Fetch comprehensive integration status
+    // 3. Fetch comprehensive integration status
     apiFetch('/api/integrations/status')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) {
-          if (data.telegram) {
+          const tg = data.telegram || data.integrations?.telegram;
+          if (tg) {
             setTelegramStatus((prev) => ({
-              configured: Boolean(data.telegram.configured) || prev.configured,
-              webhookUrl: derivePublicWebhookUrl(data.telegram.webhookUrl || prev.webhookUrl),
-              totalMessagesReceived: data.telegram.totalMessagesReceived ?? data.telegram.recentCount ?? prev.totalMessagesReceived,
-              lastReceived: data.telegram.lastMessageAt || data.telegram.lastReceived || prev.lastReceived,
+              configured: typeof tg.configured === 'boolean' ? (tg.configured || prev.configured) : prev.configured,
+              webhookUrl: derivePublicWebhookUrl(tg.webhookUrl || prev.webhookUrl),
+              totalMessagesReceived: data.telegram?.recentCount ?? tg.totalMessagesReceived ?? prev.totalMessagesReceived,
+              lastReceived: data.telegram?.lastMessageAt ?? tg.lastReceived ?? prev.lastReceived,
             }));
           }
-          if (data.gemini) {
-            setGeminiStatus({
-              configured: Boolean(data.gemini.configured),
-              model: data.gemini.model || 'gemini-3.8-flash (Auto-failover)',
-            });
+          const gm = data.gemini || data.integrations?.gemini;
+          if (gm) {
+            setGeminiStatus((prev) => ({
+              configured: typeof gm.configured === 'boolean' ? (gm.configured || prev.configured) : prev.configured,
+              model: gm.model || prev.model,
+            }));
           }
-          if (data.firestore) {
-            setIsFirestoreConnected(Boolean(data.firestore.connected));
+          if (data.firestore || data.integrations?.firebase) {
+            setIsFirestoreConnected(Boolean(data.firestore?.connected ?? data.integrations?.firebase?.configured));
           }
         }
       })

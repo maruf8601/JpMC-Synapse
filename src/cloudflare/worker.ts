@@ -166,7 +166,7 @@ export default {
     // 2. Route API requests
     // /api/* routes must NEVER fall back to index.html.
     // Unknown API routes return JSON 404 inside handleApiRoute().
-    if (pathname.startsWith('/api/')) {
+    if (pathname === '/api' || pathname.startsWith('/api/')) {
       try {
         return await handleApiRoute(request, env, ctx, pathname, method, url);
       } catch (err: any) {
@@ -325,14 +325,46 @@ async function handleApiRoute(
     );
   }
 
+  // Safe runtime configuration status endpoint (NEVER returns secret values)
+  if (pathname === '/api/config/status' && method === 'GET') {
+    return jsonResponse(
+      {
+        runtime: 'cloudflare',
+        geminiConfigured: Boolean(env.GEMINI_API_KEY),
+        telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+        staffAccessConfigured: Boolean(env.STAFF_ACCESS_CODE),
+        firebaseConfigured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY || env.FIREBASE_PROJECT_ID),
+      },
+      200,
+      corsHeaders
+    );
+  }
+
   if (pathname === '/api/integrations/status' && method === 'GET') {
+    const isBotConfigured = Boolean(env.TELEGRAM_BOT_TOKEN);
+    const isGeminiConfigured = Boolean(env.GEMINI_API_KEY);
+    const publicUrl = url.origin;
     return jsonResponse(
       {
         timestamp: new Date().toISOString(),
         runtime: 'cloudflare-workers',
+        gemini: {
+          configured: isGeminiConfigured,
+          model: 'gemini-2.5-flash (Auto-failover: gemini-1.5-flash)',
+          status: isGeminiConfigured ? 'ready' : 'missing_api_key',
+        },
+        telegram: {
+          configured: isBotConfigured,
+          webhookUrl: `${publicUrl}/api/telegram/webhook`,
+        },
+        firestore: {
+          connected: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY || env.FIREBASE_PROJECT_ID),
+          projectId: env.FIREBASE_PROJECT_ID || 'sapient-pen-336609',
+        },
+        staffAuth: { configured: Boolean(env.STAFF_ACCESS_CODE) },
         integrations: {
-          gemini: { configured: Boolean(env.GEMINI_API_KEY), model: 'gemini-2.5-flash' },
-          telegram: { configured: Boolean(env.TELEGRAM_BOT_TOKEN) },
+          gemini: { configured: isGeminiConfigured, model: 'gemini-2.5-flash' },
+          telegram: { configured: isBotConfigured },
           firebase: {
             configured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_KEY),
             projectId: env.FIREBASE_PROJECT_ID || 'sapient-pen-336609',
@@ -396,8 +428,38 @@ async function handleApiRoute(
   }
 
   if (pathname === '/api/telegram/status' && method === 'GET') {
-    const status = await getTelegramStatusInWorker(env);
-    return jsonResponse(status, 200, corsHeaders);
+    const isBotConfigured = Boolean(env.TELEGRAM_BOT_TOKEN);
+    const publicUrl = url.origin;
+    let recentCount = 0;
+    let lastReceived: string | null = null;
+    try {
+      const messages = await firestoreQuery(env, 'telegramMessages', {
+        orderByField: 'id',
+        orderDirection: 'DESCENDING',
+        limit: 10,
+      });
+      if (messages && messages.length > 0) {
+        recentCount = messages.length;
+        lastReceived = messages[0].timestamp || messages[0].createdAt || null;
+      }
+    } catch {
+      // ignore firestore fetch errors for status check
+    }
+
+    return jsonResponse(
+      {
+        configured: isBotConfigured,
+        webhookUrl: `${publicUrl}/api/telegram/webhook`,
+        status: isBotConfigured ? 'active' : 'pending_configuration',
+        processedCount: recentCount,
+        totalMessagesReceived: recentCount,
+        botTokenSet: isBotConfigured,
+        lastReceived,
+        secretTokenConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET),
+      },
+      200,
+      corsHeaders
+    );
   }
 
   if (pathname === '/api/telegram/setup-webhook' && method === 'POST') {
