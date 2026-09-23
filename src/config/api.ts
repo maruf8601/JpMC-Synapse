@@ -47,13 +47,38 @@ export function apiUrl(path: string): string {
   return base ? `${base}${normalizedPath}` : normalizedPath;
 }
 
+export interface ApiFetchOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
 /**
  * Centralized fetch helper that prefixes relative `/api` paths with the appropriate
  * backend base URL when running in native Android / Capacitor environments.
+ * Includes configurable timeout (default 12s) to prevent hung requests during Render cold starts.
  */
-export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+export async function apiFetch(input: string, init?: ApiFetchOptions): Promise<Response> {
   const targetUrl = input.startsWith('/api') ? apiUrl(input) : input;
-  return fetch(targetUrl, init);
+  const timeoutMs = init?.timeoutMs ?? 12000;
+
+  // If caller explicitly provided an AbortSignal, use native fetch with that signal
+  if (init?.signal) {
+    return fetch(targetUrl, init);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`[apiFetch] Request timed out after ${timeoutMs}ms: ${targetUrl}`));
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(targetUrl, {
+      ...init,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

@@ -140,14 +140,19 @@ export async function enablePushNotifications(): Promise<{
       };
     }
 
-    // 2. Register Firebase Messaging Service Worker
+    // 2. Register or reuse Service Worker for Firebase Messaging
     let swRegistration: ServiceWorkerRegistration | undefined;
     if ('serviceWorker' in navigator) {
       try {
-        swRegistration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
-          scope: '/',
-        });
-        await navigator.serviceWorker.ready;
+        // First check if root PWA service worker is already active or ready
+        const existing = await navigator.serviceWorker.ready;
+        if (existing) {
+          swRegistration = existing;
+        } else {
+          swRegistration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+            scope: '/firebase-cloud-messaging-push-scope',
+          });
+        }
       } catch (swErr) {
         console.warn('[Push] Service worker register warning:', swErr);
       }

@@ -6,7 +6,7 @@
  */
 
 import { auth } from './firebaseClient';
-import { signOut } from 'firebase/auth';
+import { signOut, User } from 'firebase/auth';
 import { googleSignIn, DRIVE_SCOPE } from './googleAuth';
 import { apiFetch } from '../config/api';
 
@@ -37,6 +37,7 @@ export interface AppAuthState {
 }
 
 const SESSION_STORAGE_KEY = 'jpmc_synapse_user_session_v1';
+const ADMIN_SESSION_STORAGE_KEY = 'jpmc_synapse_admin_session_v1';
 
 /**
  * Returns saved normal user session from localStorage if present
@@ -63,6 +64,44 @@ export function clearStoredUserSession(): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {}
+}
+
+/**
+ * Returns saved verified admin profile from localStorage if present
+ */
+export function getStoredAdminSession(): UserSessionProfile | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.uid && parsed.role === 'admin') {
+      return parsed;
+    }
+  } catch (e) {
+    console.warn('[authService] Failed reading stored admin session:', e);
+  }
+  return null;
+}
+
+/**
+ * Stores verified admin profile into localStorage for instant offline/relaunch startup
+ */
+export function storeAdminSession(profile: UserSessionProfile): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(profile));
+  } catch {}
+}
+
+/**
+ * Clears saved admin profile
+ */
+export function clearStoredAdminSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
   } catch {}
 }
 
@@ -141,7 +180,8 @@ export async function loginNormalUser(name: string, accessCode: string): Promise
 }
 
 /**
- * Verifies stored session token with server on app launch
+ * Verifies stored session token with server asynchronously in the background.
+ * Uses a strict 6-second timeout and never clears valid local credentials on network/cold-start issues.
  */
 export async function verifyStoredUserSession(): Promise<UserSessionProfile | null> {
   const session = getStoredUserSession();
@@ -159,40 +199,133 @@ export async function verifyStoredUserSession(): Promise<UserSessionProfile | nu
       body: JSON.stringify({
         sessionToken: session.token,
       }),
+      timeoutMs: 6000,
     });
 
-    if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      console.warn('[authService] Session explicitly invalidated by server (401/403).');
       clearStoredUserSession();
       return null;
+    }
+
+    if (!res.ok) {
+      // 5xx, gateway error, or Render cold start wake-up in progress
+      // Return cached user profile so UI remains fully accessible
+      console.warn('[authService] Server returned non-ok status during background session verification:', res.status);
+      return session.user;
     }
 
     const data = await res.json();
-    if (!data.valid || !data.user) {
+    if (data.valid === false) {
+      console.warn('[authService] Session rejected by server.');
       clearStoredUserSession();
       return null;
     }
 
-    const userProfile: UserSessionProfile = {
-      uid: data.user.uid,
-      email: data.user.email || '',
-      displayName: data.user.displayName || session.user.displayName,
-      role: 'user',
-      active: true,
-      authMethod: 'normal-user',
-    };
-
-    return userProfile;
-  } catch (err) {
-    console.warn('[authService] Session verification network notice:', err);
-    // In case of transient offline, allow existing stored session to load for offline cache
-    if (session.user) {
-      return {
-        ...session.user,
+    if (data.valid && data.user) {
+      const userProfile: UserSessionProfile = {
+        uid: data.user.uid,
+        email: data.user.email || '',
+        displayName: data.user.displayName || session.user.displayName,
         role: 'user',
+        active: true,
         authMethod: 'normal-user',
       };
+      // Keep cached session up to date
+      try {
+        localStorage.setItem(
+          SESSION_STORAGE_KEY,
+          JSON.stringify({ ...session, user: userProfile })
+        );
+      } catch {}
+      return userProfile;
     }
-    return null;
+
+    return session.user;
+  } catch (err) {
+    console.warn('[authService] Session verification network timeout/notice (using cached session):', err);
+    // In case of Render cold start or offline, keep user authenticated with cached credentials
+    return session.user;
+  }
+}
+
+/**
+ * Validates Google Administrator authorization with the backend server.
+ * Uses a 6-second timeout and preserves admin access if the backend is cold or offline.
+ */
+export async function verifyAdminOnServer(firebaseUser: User): Promise<{
+  authorized: boolean;
+  profile?: UserSessionProfile;
+  error?: string;
+  offline?: boolean;
+}> {
+  try {
+    const idToken = await firebaseUser.getIdToken();
+    const verifyRes = await apiFetch('/api/auth/admin-verify', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeoutMs: 6000,
+    });
+
+    const data = await verifyRes.json().catch(() => ({}));
+
+    if (verifyRes.status === 401 || verifyRes.status === 403 || (verifyRes.ok && data.authorized === false)) {
+      clearStoredAdminSession();
+      return {
+        authorized: false,
+        error: data.error || 'এই গুগল অ্যাকাউন্টটি অ্যাডমিনিস্ট্রেটর হিসেবে অনুমোদিত নয়।',
+      };
+    }
+
+    if (!verifyRes.ok) {
+      // Server error or Render cold start 502/503: do NOT sign out
+      const cached = getStoredAdminSession();
+      return {
+        authorized: true,
+        profile: cached || {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          displayName: firebaseUser.displayName || 'Admin',
+          role: 'admin',
+          active: true,
+          authMethod: 'admin-google',
+        },
+        offline: true,
+      };
+    }
+
+    const adminProfile: UserSessionProfile = {
+      uid: firebaseUser.uid,
+      email: firebaseUser.email || '',
+      displayName: data.user?.displayName || firebaseUser.displayName || 'Admin',
+      role: 'admin',
+      active: true,
+      authMethod: 'admin-google',
+    };
+
+    storeAdminSession(adminProfile);
+    return {
+      authorized: true,
+      profile: adminProfile,
+    };
+  } catch (err) {
+    console.warn('[authService] Admin verification network timeout/notice (keeping cached admin status):', err);
+    const cached = getStoredAdminSession();
+    return {
+      authorized: true,
+      profile: cached || {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email || '',
+        displayName: firebaseUser.displayName || 'Admin',
+        role: 'admin',
+        active: true,
+        authMethod: 'admin-google',
+      },
+      offline: true,
+    };
   }
 }
 
@@ -212,12 +345,14 @@ export async function loginAdminGoogle(): Promise<UserSessionProfile> {
       Authorization: `Bearer ${idToken}`,
       'Content-Type': 'application/json',
     },
+    timeoutMs: 10000,
   });
 
   const data = await verifyRes.json().catch(() => ({}));
 
   if (!verifyRes.ok || !data.authorized) {
     // Strictly sign out unauthorized Google account immediately
+    clearStoredAdminSession();
     await signOut(auth).catch(() => {});
     throw new Error(
       data.error ||
@@ -228,7 +363,7 @@ export async function loginAdminGoogle(): Promise<UserSessionProfile> {
   // Clear any existing normal user session to avoid collision
   clearStoredUserSession();
 
-  return {
+  const adminProfile: UserSessionProfile = {
     uid: result.user.uid,
     email: result.user.email || '',
     displayName: data.user?.displayName || result.user.displayName || 'Admin',
@@ -236,14 +371,20 @@ export async function loginAdminGoogle(): Promise<UserSessionProfile> {
     active: true,
     authMethod: 'admin-google',
   };
+
+  storeAdminSession(adminProfile);
+  return adminProfile;
 }
 
 /**
  * Auth-method aware Logout:
  * If normal-user: terminates session token and clears localStorage. Does NOT call Firebase signOut().
- * If admin-google: signs out of Firebase Auth.
+ * If admin-google: signs out of Firebase Auth and clears stored admin session.
  */
 export async function logoutUser(authMethod?: AuthMethod | null, sessionToken?: string): Promise<void> {
+  clearStoredUserSession();
+  clearStoredAdminSession();
+
   if (authMethod === 'normal-user') {
     const token = sessionToken || getStoredUserSession()?.token;
     if (token) {
@@ -255,10 +396,10 @@ export async function logoutUser(authMethod?: AuthMethod | null, sessionToken?: 
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ sessionToken: token }),
+          timeoutMs: 4000,
         });
       } catch {}
     }
-    clearStoredUserSession();
     return;
   }
 
@@ -270,20 +411,6 @@ export async function logoutUser(authMethod?: AuthMethod | null, sessionToken?: 
   }
 
   // Fallback: clear both
-  const token = sessionToken || getStoredUserSession()?.token;
-  if (token) {
-    try {
-      await apiFetch('/api/auth/logout', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ sessionToken: token }),
-      });
-    } catch {}
-  }
-  clearStoredUserSession();
   try {
     await signOut(auth);
   } catch {}

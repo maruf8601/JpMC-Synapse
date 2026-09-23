@@ -1,51 +1,89 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { eventRepository } from './data/eventRepository';
 import { EventEntity, NavigationTab, Language, Category, AnnouncementEntity } from './domain/models';
 import { TopAppBar } from './components/TopAppBar';
 import { BottomNavBar } from './components/BottomNavBar';
 import { DashboardView } from './components/DashboardView';
-import { UpcomingView } from './components/UpcomingView';
-import { CalendarView } from './components/CalendarView';
-import { ReviewCenterView } from './components/ReviewCenterView';
-import { TelegramInboxView } from './components/TelegramInboxView';
-import { SettingsView } from './components/SettingsView';
-import { EventHistoryDriveView } from './components/EventHistoryDriveView';
-import { EventDetailsModal } from './components/EventDetailsModal';
-import { QuickAddModal } from './components/QuickAddModal';
-import { AboutModal } from './components/AboutModal';
-import { AnnouncementModal } from './components/AnnouncementModal';
-import { PrivacyPolicyPage } from './components/PrivacyPolicyPage';
-import { TermsOfServicePage } from './components/TermsOfServicePage';
-import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { DeviceFrame } from './components/DeviceFrame';
 import { SplashScreen } from './components/SplashScreen';
 import { LoginScreen } from './components/LoginScreen';
-import { AdminManagementView } from './components/AdminManagementView';
 import { checkAndRunDailyAutoBackup } from './services/autoBackupService';
 import { checkScheduledReminders } from './services/reminderNotificationService';
 import { initForegroundNotificationListener } from './services/pushNotificationService';
 import { getPendingAnnouncementsForUser } from './services/announcementService';
 import { auth } from './services/firebaseClient';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { apiFetch } from './config/api';
 import {
   getStoredUserSession,
   verifyStoredUserSession,
   clearStoredUserSession,
+  getStoredAdminSession,
+  storeAdminSession,
+  clearStoredAdminSession,
+  verifyAdminOnServer,
   logoutUser,
   UserSessionProfile,
   AppAuthState,
-  AuthMethod,
 } from './services/authService';
 import {
   getUserAboutVersionSeen,
   setUserAboutVersionSeen,
   CURRENT_ABOUT_VERSION,
-  hasSeenAboutPopup,
-  setAboutPopupSeen,
   hasUserSeenAbout,
   setUserSeenAbout,
 } from './services/userPreferencesService';
+
+// Lazy-loaded non-critical views and modals for optimal initial load time and code-splitting
+const UpcomingView = lazy(() =>
+  import('./components/UpcomingView').then((m) => ({ default: m.UpcomingView }))
+);
+const CalendarView = lazy(() =>
+  import('./components/CalendarView').then((m) => ({ default: m.CalendarView }))
+);
+const ReviewCenterView = lazy(() =>
+  import('./components/ReviewCenterView').then((m) => ({ default: m.ReviewCenterView }))
+);
+const TelegramInboxView = lazy(() =>
+  import('./components/TelegramInboxView').then((m) => ({ default: m.TelegramInboxView }))
+);
+const SettingsView = lazy(() =>
+  import('./components/SettingsView').then((m) => ({ default: m.SettingsView }))
+);
+const EventHistoryDriveView = lazy(() =>
+  import('./components/EventHistoryDriveView').then((m) => ({ default: m.EventHistoryDriveView }))
+);
+const AdminManagementView = lazy(() =>
+  import('./components/AdminManagementView').then((m) => ({ default: m.AdminManagementView }))
+);
+const EventDetailsModal = lazy(() =>
+  import('./components/EventDetailsModal').then((m) => ({ default: m.EventDetailsModal }))
+);
+const QuickAddModal = lazy(() =>
+  import('./components/QuickAddModal').then((m) => ({ default: m.QuickAddModal }))
+);
+const AboutModal = lazy(() =>
+  import('./components/AboutModal').then((m) => ({ default: m.AboutModal }))
+);
+const AnnouncementModal = lazy(() =>
+  import('./components/AnnouncementModal').then((m) => ({ default: m.AnnouncementModal }))
+);
+const PrivacyPolicyPage = lazy(() =>
+  import('./components/PrivacyPolicyPage').then((m) => ({ default: m.PrivacyPolicyPage }))
+);
+const TermsOfServicePage = lazy(() =>
+  import('./components/TermsOfServicePage').then((m) => ({ default: m.TermsOfServicePage }))
+);
+const PWAInstallGuideModal = lazy(() =>
+  import('./components/PWAInstallGuideModal').then((m) => ({ default: m.PWAInstallGuideModal }))
+);
+
+// Fallback spinner for deferred components
+const ViewSuspenseFallback: React.FC = () => (
+  <div className="flex flex-col items-center justify-center p-12 min-h-[220px]">
+    <div className="w-7 h-7 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+    <span className="text-xs text-slate-500 font-medium mt-3">লোড হচ্ছে...</span>
+  </div>
+);
 
 export default function App() {
   const [language, setLanguage] = useState<Language>('bn');
@@ -53,13 +91,40 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
 
-  // Central Application Authentication State (AppAuthState)
-  const [authState, setAuthState] = useState<AppAuthState>({
-    initialized: false,
-    authenticated: false,
-    authMethod: null,
-    role: null,
-    profile: null,
+  // Synchronous cache restoration: eliminates splash screen delay on PWA relaunch
+  const [authState, setAuthState] = useState<AppAuthState>(() => {
+    // 1. Check persistent Normal User session first
+    const stored = getStoredUserSession();
+    if (stored?.token && stored?.user) {
+      return {
+        initialized: true,
+        authenticated: true,
+        authMethod: 'normal-user',
+        role: 'user',
+        profile: { ...stored.user, role: 'user', authMethod: 'normal-user' },
+      };
+    }
+
+    // 2. Check persistent Admin session
+    const storedAdmin = getStoredAdminSession();
+    if (storedAdmin?.uid && storedAdmin?.role === 'admin') {
+      return {
+        initialized: true,
+        authenticated: true,
+        authMethod: 'admin-google',
+        role: 'admin',
+        profile: storedAdmin,
+      };
+    }
+
+    // 3. Fallback to uninitialized for first launch
+    return {
+      initialized: false,
+      authenticated: false,
+      authMethod: null,
+      role: null,
+      profile: null,
+    };
   });
 
   const userProfile = authState.profile;
@@ -108,129 +173,45 @@ export default function App() {
   }, []);
 
   // Dual-Authentication & Authorization Resolver:
-  // 1. Normal User Session: Full Name + Institutional Secret Code (persistent in localStorage)
-  // 2. Admin Login: Google Sign-In (strictly restricted to authorized administrator accounts)
+  // Render backend requests NEVER block the splash screen.
+  // Auth state is checked locally and confirmed in background.
   useEffect(() => {
     let isMounted = true;
 
-    async function initializeAuth() {
-      console.log('[Auth] Restoring authentication...');
+    // Fail-safe timeout: guarantees splash screen never hangs longer than 1200ms
+    const splashTimeout = setTimeout(() => {
+      if (isMounted) {
+        setAuthState((prev) => {
+          if (prev.initialized) return prev;
+          console.warn('[Auth] Splash fail-safe timeout reached. Displaying application.');
+          return {
+            ...prev,
+            initialized: true,
+          };
+        });
+      }
+    }, 1200);
 
-      // Step A: Check persistent Normal User session first
-      const stored = getStoredUserSession();
-      console.log('[Auth] Normal user session:', stored?.token ? 'present' : 'absent');
-
-      if (stored?.token) {
-        try {
-          const verifiedUser = await verifyStoredUserSession();
-          if (verifiedUser && isMounted) {
-            console.log('[Auth] Selected auth method: normal-user');
-            setAuthState({
+    // Step A: Normal User Session (Non-blocking background validation)
+    const stored = getStoredUserSession();
+    if (stored?.token) {
+      clearTimeout(splashTimeout);
+      // Asynchronously verify session in background without delaying UI render
+      verifyStoredUserSession()
+        .then((verifiedUser) => {
+          if (!isMounted) return;
+          if (verifiedUser) {
+            setAuthState((prev) => ({
+              ...prev,
               initialized: true,
               authenticated: true,
               authMethod: 'normal-user',
               role: 'user',
               profile: verifiedUser,
-            });
-            console.log('[Auth] Authentication initialized');
-            return () => {};
-          }
-        } catch (sessionErr) {
-          console.warn('[Auth] Normal user session verification warning:', sessionErr);
-          if (stored.user && isMounted) {
-            console.log('[Auth] Selected auth method: normal-user (cached)');
-            setAuthState({
-              initialized: true,
-              authenticated: true,
-              authMethod: 'normal-user',
-              role: 'user',
-              profile: { ...stored.user, role: 'user', authMethod: 'normal-user' },
-            });
-            console.log('[Auth] Authentication initialized');
-            return () => {};
-          }
-        }
-      }
-
-      // Step B: Firebase Auth listener for Admin Google Sign-In only
-      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
-        if (!isMounted) return;
-
-        console.log('[Auth] Firebase admin user:', firebaseUser ? 'present' : 'absent');
-
-        // CRITICAL: If a normal user session exists in storage,
-        // Firebase Auth state MUST NEVER disturb or log out the normal user!
-        const activeStored = getStoredUserSession();
-        if (activeStored?.token) {
-          console.log('[Auth] Active normal-user session exists, ignoring Firebase auth change.');
-          return;
-        }
-
-        if (!firebaseUser) {
-          console.log('[Auth] Selected auth method: none');
-          setAuthState({
-            initialized: true,
-            authenticated: false,
-            authMethod: null,
-            role: null,
-            profile: null,
-          });
-          console.log('[Auth] Authentication initialized');
-          return;
-        }
-
-        // Firebase user exists: check if authorized administrator
-        try {
-          const idToken = await firebaseUser.getIdToken();
-          const verifyRes = await apiFetch('/api/auth/admin-verify', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${idToken}`,
-              'Content-Type': 'application/json',
-            },
-          });
-          const data = await verifyRes.json().catch(() => ({}));
-
-          if (!verifyRes.ok || !data.authorized) {
-            console.warn('[Auth] Non-admin Google account signed out:', firebaseUser.email);
-            await signOut(auth).catch(() => {});
-            if (isMounted) {
-              setAuthState({
-                initialized: true,
-                authenticated: false,
-                authMethod: null,
-                role: null,
-                profile: null,
-              });
-              console.log('[Auth] Authentication initialized');
-            }
-            return;
-          }
-
-          const adminProfile: UserSessionProfile = {
-            uid: firebaseUser.uid,
-            email: firebaseUser.email || '',
-            displayName: data.user?.displayName || firebaseUser.displayName || 'Admin',
-            role: 'admin',
-            active: true,
-            authMethod: 'admin-google',
-          };
-
-          console.log('[Auth] Selected auth method: admin-google');
-          if (isMounted) {
-            setAuthState({
-              initialized: true,
-              authenticated: true,
-              authMethod: 'admin-google',
-              role: 'admin',
-              profile: adminProfile,
-            });
-            console.log('[Auth] Authentication initialized');
-          }
-        } catch (err) {
-          console.warn('[Auth] Google Admin verification error:', err);
-          await signOut(auth).catch(() => {});
-          if (isMounted) {
+            }));
+          } else {
+            // Explicit revocation by server (401/403)
+            console.warn('[Auth] Normal user session explicitly revoked.');
             setAuthState({
               initialized: true,
               authenticated: false,
@@ -238,22 +219,101 @@ export default function App() {
               role: null,
               profile: null,
             });
-            console.log('[Auth] Authentication initialized');
           }
-        }
-      });
+        })
+        .catch((err) => {
+          console.warn('[Auth] Background session check note:', err);
+        });
 
-      return unsubscribe;
+      return () => {
+        isMounted = false;
+        clearTimeout(splashTimeout);
+      };
     }
 
-    let unsub: (() => void) | undefined;
-    initializeAuth().then((u) => {
-      if (typeof u === 'function') unsub = u;
+    // Step B: Firebase Auth listener for Admin Google Sign-In
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+      if (!isMounted) return;
+      clearTimeout(splashTimeout);
+
+      // If active normal user session was saved in the meantime, ignore
+      const activeStored = getStoredUserSession();
+      if (activeStored?.token) return;
+
+      if (!firebaseUser) {
+        // No Firebase user and no stored user session: prompt login
+        setAuthState({
+          initialized: true,
+          authenticated: false,
+          authMethod: null,
+          role: null,
+          profile: null,
+        });
+        return;
+      }
+
+      // Check if we already have verified admin session cached
+      const cachedAdmin = getStoredAdminSession();
+      if (cachedAdmin && cachedAdmin.uid === firebaseUser.uid) {
+        setAuthState({
+          initialized: true,
+          authenticated: true,
+          authMethod: 'admin-google',
+          role: 'admin',
+          profile: cachedAdmin,
+        });
+      } else {
+        // Optimistically set authenticated admin so UI renders immediately
+        setAuthState({
+          initialized: true,
+          authenticated: true,
+          authMethod: 'admin-google',
+          role: 'admin',
+          profile: {
+            uid: firebaseUser.uid,
+            email: firebaseUser.email || '',
+            displayName: firebaseUser.displayName || 'Admin',
+            role: 'admin',
+            active: true,
+            authMethod: 'admin-google',
+          },
+        });
+      }
+
+      // Background confirmation with Render backend (NON-BLOCKING)
+      verifyAdminOnServer(firebaseUser)
+        .then((result) => {
+          if (!isMounted) return;
+          if (result.authorized === false) {
+            console.warn('[Auth] Non-admin Google account logged out.');
+            signOut(auth).catch(() => {});
+            setAuthState({
+              initialized: true,
+              authenticated: false,
+              authMethod: null,
+              role: null,
+              profile: null,
+            });
+          } else if (result.profile) {
+            setAuthState((prev) => ({
+              ...prev,
+              initialized: true,
+              authenticated: true,
+              authMethod: 'admin-google',
+              role: 'admin',
+              profile: result.profile!,
+            }));
+          }
+        })
+        .catch((err) => {
+          console.warn('[Auth] Background admin verification note:', err);
+        });
     });
 
     return () => {
       isMounted = false;
-      if (unsub) unsub();
+      clearTimeout(splashTimeout);
+      unsubscribe();
     };
   }, []);
 
@@ -493,28 +553,32 @@ export default function App() {
   // Public route: /privacy is accessible without authentication or login
   if (isPrivacyRoute) {
     return (
-      <PrivacyPolicyPage
-        onBack={() => {
-          if (window.location.pathname.startsWith('/privacy')) {
-            window.history.pushState(null, '', '/');
-          }
-          setIsPrivacyRoute(false);
-        }}
-      />
+      <Suspense fallback={<ViewSuspenseFallback />}>
+        <PrivacyPolicyPage
+          onBack={() => {
+            if (window.location.pathname.startsWith('/privacy')) {
+              window.history.pushState(null, '', '/');
+            }
+            setIsPrivacyRoute(false);
+          }}
+        />
+      </Suspense>
     );
   }
 
   // Public route: /terms is accessible without authentication or login
   if (isTermsRoute) {
     return (
-      <TermsOfServicePage
-        onBack={() => {
-          if (window.location.pathname.startsWith('/terms')) {
-            window.history.pushState(null, '', '/');
-          }
-          setIsTermsRoute(false);
-        }}
-      />
+      <Suspense fallback={<ViewSuspenseFallback />}>
+        <TermsOfServicePage
+          onBack={() => {
+            if (window.location.pathname.startsWith('/terms')) {
+              window.history.pushState(null, '', '/');
+            }
+            setIsTermsRoute(false);
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -620,12 +684,14 @@ export default function App() {
             >
               ← {language === 'bn' ? 'ড্যাশবোর্ডে ফিরুন' : 'Back to Dashboard'}
             </button>
-            <ReviewCenterView
-              events={pendingReviewEvents}
-              onApprove={handleApproveEvent}
-              onReject={handleRejectEvent}
-              language={language}
-            />
+            <Suspense fallback={<ViewSuspenseFallback />}>
+              <ReviewCenterView
+                events={pendingReviewEvents}
+                onApprove={handleApproveEvent}
+                onReject={handleRejectEvent}
+                language={language}
+              />
+            </Suspense>
           </div>
         ) : (
           /* Active Screen by Tab */
@@ -648,87 +714,89 @@ export default function App() {
               />
             )}
 
-            {currentTab === 'calendar' && (
-              <div className="space-y-6">
-                <UpcomingView
-                  events={allUpcomingEvents}
-                  onSelectEvent={setSelectedEvent}
+            <Suspense fallback={<ViewSuspenseFallback />}>
+              {currentTab === 'calendar' && (
+                <div className="space-y-6">
+                  <UpcomingView
+                    events={allUpcomingEvents}
+                    onSelectEvent={setSelectedEvent}
+                    language={language}
+                  />
+                  <CalendarView
+                    events={allHistoryRecords}
+                    onSelectEvent={setSelectedEvent}
+                    language={language}
+                    role={userRole}
+                    onAddEventOnDate={
+                      userRole === 'admin'
+                        ? (dateStr) => {
+                            setPrefilledDate(dateStr);
+                            setEditingEvent(null);
+                            setIsQuickAddOpen(true);
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+              )}
+
+              {currentTab === 'history' && (
+                <EventHistoryDriveView
+                  pastEvents={pastEvents}
+                  allEvents={allHistoryRecords}
                   language={language}
-                />
-                <CalendarView
-                  events={allHistoryRecords}
                   onSelectEvent={setSelectedEvent}
-                  language={language}
                   role={userRole}
-                  onAddEventOnDate={
-                    userRole === 'admin'
-                      ? (dateStr) => {
-                          setPrefilledDate(dateStr);
-                          setEditingEvent(null);
-                          setIsQuickAddOpen(true);
-                        }
-                      : undefined
-                  }
                 />
-              </div>
-            )}
+              )}
 
-            {currentTab === 'history' && (
-              <EventHistoryDriveView
-                pastEvents={pastEvents}
-                allEvents={allHistoryRecords}
-                language={language}
-                onSelectEvent={setSelectedEvent}
-                role={userRole}
-              />
-            )}
+              {currentTab === 'inbox' && (
+                <TelegramInboxView
+                  messages={telegramMessages}
+                  language={language}
+                  onOpenReview={() => setIsReviewOpenFromHeader(true)}
+                  onSelectEvent={setSelectedEvent}
+                  role={userRole}
+                />
+              )}
 
-            {currentTab === 'inbox' && (
-              <TelegramInboxView
-                messages={telegramMessages}
-                language={language}
-                onOpenReview={() => setIsReviewOpenFromHeader(true)}
-                onSelectEvent={setSelectedEvent}
-                role={userRole}
-              />
-            )}
+              {currentTab === 'admin' && (
+                <AdminManagementView
+                  pendingReviewEvents={pendingReviewEvents}
+                  onApproveEvent={handleApproveEvent}
+                  onRejectEvent={handleRejectEvent}
+                  onOpenQuickAdd={() => setIsQuickAddOpen(true)}
+                  language={language}
+                  onMeetingCreated={handleAddEvent}
+                  pastEvents={pastEvents}
+                  allEvents={allHistoryRecords}
+                  onSelectEvent={setSelectedEvent}
+                />
+              )}
 
-            {currentTab === 'admin' && (
-              <AdminManagementView
-                pendingReviewEvents={pendingReviewEvents}
-                onApproveEvent={handleApproveEvent}
-                onRejectEvent={handleRejectEvent}
-                onOpenQuickAdd={() => setIsQuickAddOpen(true)}
-                language={language}
-                onMeetingCreated={handleAddEvent}
-                pastEvents={pastEvents}
-                allEvents={allHistoryRecords}
-                onSelectEvent={setSelectedEvent}
-              />
-            )}
-
-            {currentTab === 'settings' && (
-              <SettingsView
-                language={language}
-                onLanguageChange={setLanguage}
-                onOpenAbout={() => setIsAboutOpen(true)}
-                onOpenPrivacy={() => {
-                  window.history.pushState(null, '', '/privacy');
-                  setIsPrivacyRoute(true);
-                  setIsTermsRoute(false);
-                }}
-                onOpenTerms={() => {
-                  window.history.pushState(null, '', '/terms');
-                  setIsTermsRoute(true);
-                  setIsPrivacyRoute(false);
-                }}
-                onResetData={() => eventRepository.resetToDefaults()}
-                onNavigateToTab={setCurrentTab}
-                onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}
-                userProfile={userProfile}
-                onLogout={handleLogout}
-              />
-            )}
+              {currentTab === 'settings' && (
+                <SettingsView
+                  language={language}
+                  onLanguageChange={setLanguage}
+                  onOpenAbout={() => setIsAboutOpen(true)}
+                  onOpenPrivacy={() => {
+                    window.history.pushState(null, '', '/privacy');
+                    setIsPrivacyRoute(true);
+                    setIsTermsRoute(false);
+                  }}
+                  onOpenTerms={() => {
+                    window.history.pushState(null, '', '/terms');
+                    setIsTermsRoute(true);
+                    setIsPrivacyRoute(false);
+                  }}
+                  onResetData={() => eventRepository.resetToDefaults()}
+                  onNavigateToTab={setCurrentTab}
+                  onOpenInstallModal={() => setIsPWAInstallModalOpen(true)}
+                  userProfile={userProfile}
+                  onLogout={handleLogout}
+                />
+              )}
+            </Suspense>
           </>
         )}
       </main>
@@ -752,66 +820,76 @@ export default function App() {
       />
 
       {/* 5. Modals & Overlays */}
-      <EventDetailsModal
-        event={selectedEvent}
-        onClose={() => setSelectedEvent(null)}
-        onToggleComplete={(id) => handleToggleComplete(id)}
-        onDelete={handleDeleteEvent}
-        onEdit={handleEditEvent}
-        language={language}
-        role={userRole}
-      />
+      <Suspense fallback={null}>
+        {selectedEvent && (
+          <EventDetailsModal
+            event={selectedEvent}
+            onClose={() => setSelectedEvent(null)}
+            onToggleComplete={(id) => handleToggleComplete(id)}
+            onDelete={handleDeleteEvent}
+            onEdit={handleEditEvent}
+            language={language}
+            role={userRole}
+          />
+        )}
 
-      <QuickAddModal
-        isOpen={isQuickAddOpen}
-        onClose={() => {
-          setIsQuickAddOpen(false);
-          setEditingEvent(null);
-          setPrefilledDate(null);
-        }}
-        onAddEvent={handleAddEvent}
-        onUpdateEvent={handleUpdateEvent}
-        initialEvent={editingEvent}
-        prefilledDate={prefilledDate}
-        language={language}
-      />
+        {isQuickAddOpen && (
+          <QuickAddModal
+            isOpen={isQuickAddOpen}
+            onClose={() => {
+              setIsQuickAddOpen(false);
+              setEditingEvent(null);
+              setPrefilledDate(null);
+            }}
+            onAddEvent={handleAddEvent}
+            onUpdateEvent={handleUpdateEvent}
+            initialEvent={editingEvent}
+            prefilledDate={prefilledDate}
+            language={language}
+          />
+        )}
 
-      <AboutModal
-        isOpen={isAboutOpen}
-        onClose={() => {
-          if (isFirstLoginAbout) {
-            handleGetStartedFromAbout();
-          } else {
-            setIsAboutOpen(false);
-          }
-        }}
-        language={language}
-        isFirstLogin={isFirstLoginAbout}
-        onGetStarted={handleGetStartedFromAbout}
-        isSavingPreference={isSavingAboutPref}
-      />
+        {isAboutOpen && (
+          <AboutModal
+            isOpen={isAboutOpen}
+            onClose={() => {
+              if (isFirstLoginAbout) {
+                handleGetStartedFromAbout();
+              } else {
+                setIsAboutOpen(false);
+              }
+            }}
+            language={language}
+            isFirstLogin={isFirstLoginAbout}
+            onGetStarted={handleGetStartedFromAbout}
+            isSavingPreference={isSavingAboutPref}
+          />
+        )}
 
-      <PWAInstallGuideModal
-        isOpen={isPWAInstallModalOpen}
-        onClose={() => setIsPWAInstallModalOpen(false)}
-        language={language}
-      />
+        {isPWAInstallModalOpen && (
+          <PWAInstallGuideModal
+            isOpen={isPWAInstallModalOpen}
+            onClose={() => setIsPWAInstallModalOpen(false)}
+            language={language}
+          />
+        )}
 
-      {/* 6. In-App Popup Announcement Modal */}
-      {isAnnouncementModalOpen && announcementQueue.length > 0 && (
-        <AnnouncementModal
-          queue={announcementQueue}
-          userId={userProfile?.uid}
-          onDismiss={() => {
-            setIsAnnouncementModalOpen(false);
-            setSessionDismissedAnnouncementIds((prev) => [
-              ...prev,
-              ...announcementQueue.map((a) => a.id),
-            ]);
-            setAnnouncementQueue([]);
-          }}
-        />
-      )}
+        {/* 6. In-App Popup Announcement Modal */}
+        {isAnnouncementModalOpen && announcementQueue.length > 0 && (
+          <AnnouncementModal
+            queue={announcementQueue}
+            userId={userProfile?.uid}
+            onDismiss={() => {
+              setIsAnnouncementModalOpen(false);
+              setSessionDismissedAnnouncementIds((prev) => [
+                ...prev,
+                ...announcementQueue.map((a) => a.id),
+              ]);
+              setAnnouncementQueue([]);
+            }}
+          />
+        )}
+      </Suspense>
     </DeviceFrame>
   );
 }

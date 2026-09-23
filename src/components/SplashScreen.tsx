@@ -1,5 +1,6 @@
 import React from 'react';
 import { CalendarCheck2, ShieldCheck, Loader2 } from 'lucide-react';
+import localJpmcLogo from '../assets/jpmc-logo.png';
 
 interface SplashScreenProps {
   message?: string;
@@ -18,17 +19,21 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         <div className="relative mb-6">
           <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl bg-white/10 backdrop-blur-md border border-white/20 shadow-2xl flex items-center justify-center p-3">
             <img
-              src="https://jpmc.gov.bd/wp-content/uploads/2024/11/jmcpng.png"
+              src={localJpmcLogo}
               alt="Jamalpur Medical College Logo"
               className="w-full h-full object-contain drop-shadow"
               loading="eager"
-              crossOrigin="anonymous"
-              referrerPolicy="no-referrer"
+              decoding="async"
               onError={(e) => {
-                // Fallback to icon if external logo image fails
-                (e.target as HTMLElement).style.display = 'none';
-                const fallback = document.getElementById('splash-logo-fallback');
-                if (fallback) fallback.style.display = 'flex';
+                // Fallback to local PWA icon or SVG if asset fails
+                const imgEl = e.target as HTMLImageElement;
+                if (!imgEl.src.includes('pwa-192x192.png')) {
+                  imgEl.src = '/pwa-192x192.png';
+                } else {
+                  imgEl.style.display = 'none';
+                  const fallback = document.getElementById('splash-logo-fallback');
+                  if (fallback) fallback.style.display = 'flex';
+                }
               }}
             />
             <div
