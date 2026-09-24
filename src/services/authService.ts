@@ -58,6 +58,27 @@ export function getStoredUserSession(): StoredSession | null {
 }
 
 /**
+ * Returns authorization headers for API requests for either normal staff or Google Admin
+ */
+export async function getAuthHeader(): Promise<Record<string, string>> {
+  const stored = getStoredUserSession();
+  if (stored?.token) {
+    return { Authorization: `Bearer ${stored.token}` };
+  }
+
+  if (auth.currentUser) {
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      if (idToken) {
+        return { Authorization: `Bearer ${idToken}` };
+      }
+    } catch {}
+  }
+
+  return {};
+}
+
+/**
  * Clears saved normal user session
  */
 export function clearStoredUserSession(): void {

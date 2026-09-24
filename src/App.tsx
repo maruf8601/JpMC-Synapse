@@ -76,6 +76,12 @@ const TermsOfServicePage = lazy(() =>
 const PWAInstallGuideModal = lazy(() =>
   import('./components/PWAInstallGuideModal').then((m) => ({ default: m.PWAInstallGuideModal }))
 );
+const ChatView = lazy(() =>
+  import('./components/chat/ChatView').then((m) => ({ default: m.ChatView }))
+);
+const ForumView = lazy(() =>
+  import('./components/forum/ForumView').then((m) => ({ default: m.ForumView }))
+);
 
 // Fallback spinner for deferred components
 const ViewSuspenseFallback: React.FC = () => (
@@ -90,6 +96,36 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState<NavigationTab>('home');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | 'all'>('all');
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+  const [targetChatUserId, setTargetChatUserId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const match = window.location.pathname.match(/\/chat\/u\/([^/?#]+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+    const params = new URLSearchParams(window.location.search);
+    return params.get('u') || null;
+  });
+  const [initialForumPostId, setInitialForumPostId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const match = window.location.pathname.match(/\/forum\/p\/([^/?#]+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+    const params = new URLSearchParams(window.location.search);
+    return params.get('post') || null;
+  });
+
+  // Detect forum in initial URL
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname;
+      const params = new URLSearchParams(window.location.search);
+      if (pathname.startsWith('/forum') || params.get('tab') === 'forum' || params.get('post')) {
+        setCurrentTab('forum');
+      }
+    }
+  }, []);
 
   // Synchronous cache restoration: eliminates splash screen delay on PWA relaunch
   const [authState, setAuthState] = useState<AppAuthState>(() => {
@@ -171,6 +207,30 @@ export default function App() {
     window.addEventListener('popstate', handleLocationChange);
     return () => window.removeEventListener('popstate', handleLocationChange);
   }, []);
+
+  // Handle post-login redirection and shareable chat link navigation
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const isChatPath = window.location.pathname.startsWith('/chat/u/');
+    const params = new URLSearchParams(window.location.search);
+    const hasChatTab = params.get('tab') === 'chat' || isChatPath;
+
+    if (!authState.authenticated) {
+      if (targetChatUserId) {
+        sessionStorage.setItem('jpmc_post_login_target_user', targetChatUserId);
+      }
+    } else {
+      const savedTarget = sessionStorage.getItem('jpmc_post_login_target_user');
+      if (savedTarget) {
+        sessionStorage.removeItem('jpmc_post_login_target_user');
+        setTargetChatUserId(savedTarget);
+        setCurrentTab('chat');
+      } else if (hasChatTab) {
+        setCurrentTab('chat');
+      }
+    }
+  }, [authState.authenticated, targetChatUserId]);
 
   // Dual-Authentication & Authorization Resolver:
   // Render backend requests NEVER block the splash screen.
@@ -740,6 +800,32 @@ export default function App() {
                 </div>
               )}
 
+              {currentTab === 'chat' && (
+                <div className="-mx-4 -my-4 h-[calc(100vh-125px)] sm:h-[calc(100vh-135px)]">
+                  <ChatView
+                    currentUserId={userProfile?.uid || ''}
+                    language={language}
+                    initialTargetUserId={targetChatUserId}
+                    onUnreadCountChanged={setUnreadChatCount}
+                  />
+                </div>
+              )}
+
+              {currentTab === 'forum' && (
+                <div className="-mx-4 -my-4 min-h-[calc(100vh-140px)]">
+                  <ForumView
+                    currentUser={{
+                      uid: userProfile?.uid || '',
+                      displayName: userProfile?.displayName || userProfile?.name || 'Faculty Member',
+                      role: userRole === 'admin' ? 'admin' : 'user',
+                      email: userProfile?.email,
+                    }}
+                    initialPostId={initialForumPostId}
+                    onSelectPost={(pId) => setInitialForumPostId(pId)}
+                  />
+                </div>
+              )}
+
               {currentTab === 'history' && (
                 <EventHistoryDriveView
                   pastEvents={pastEvents}
@@ -816,6 +902,7 @@ export default function App() {
         language={language}
         onOpenQuickAdd={() => setIsQuickAddOpen(true)}
         reviewCount={pendingReviewEvents.length}
+        unreadChatCount={unreadChatCount}
         role={userRole}
       />
 

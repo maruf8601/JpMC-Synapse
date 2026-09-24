@@ -114,7 +114,7 @@ export interface TelegramMessageEntity {
   processedAt?: string;
 }
 
-export type NavigationTab = 'home' | 'calendar' | 'inbox' | 'admin' | 'settings' | 'history' | 'add';
+export type NavigationTab = 'home' | 'calendar' | 'chat' | 'forum' | 'inbox' | 'admin' | 'settings' | 'history' | 'add';
 
 export type Language = 'bn' | 'en';
 

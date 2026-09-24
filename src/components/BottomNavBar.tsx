@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Calendar, FileText, ShieldCheck, Settings } from 'lucide-react';
+import { LayoutDashboard, Calendar, MessageSquare, MessagesSquare, ShieldCheck, Settings } from 'lucide-react';
 import { NavigationTab, Language } from '../domain/models';
 import { toBengaliNumber } from '../domain/constants';
 
@@ -9,6 +9,7 @@ interface BottomNavBarProps {
   language: Language;
   role?: 'admin' | 'user';
   reviewCount: number;
+  unreadChatCount?: number;
 }
 
 export const BottomNavBar: React.FC<BottomNavBarProps> = ({
@@ -17,10 +18,11 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
   language,
   role = 'user',
   reviewCount,
+  unreadChatCount = 0,
 }) => {
   const isAdmin = role === 'admin';
 
-  // Base 4 items for regular staff, 5 items for admin
+  // Navigation items: Dashboard, Calendar, Chat, Forum (আলোচনা), Admin (if admin), Settings
   const baseTabs = [
     {
       id: 'home' as NavigationTab,
@@ -35,11 +37,17 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
       icon: Calendar,
     },
     {
-      id: 'inbox' as NavigationTab,
-      labelBn: 'নোটিশ',
-      labelEn: 'Notices',
-      icon: FileText,
-      badge: 0,
+      id: 'chat' as NavigationTab,
+      labelBn: 'চ্যাট',
+      labelEn: 'Chat',
+      icon: MessageSquare,
+      badge: unreadChatCount,
+    },
+    {
+      id: 'forum' as NavigationTab,
+      labelBn: 'আলোচনা',
+      labelEn: 'Forum',
+      icon: MessagesSquare,
     },
     ...(isAdmin
       ? [

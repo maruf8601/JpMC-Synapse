@@ -314,6 +314,38 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 6
               </span>
+              <h2 className="text-base font-bold text-slate-900">Interdepartmental Chat & Strict 72-Hour Retention</h2>
+            </div>
+            <div className="text-sm text-slate-600 leading-relaxed space-y-3 pl-8.5 text-xs">
+              <p>
+                The Interdepartmental Chat module enables authorized Jamalpur Medical College faculty and staff to coordinate administrative, academic, and clinical duties. To protect institutional privacy while ensuring medical governance:
+              </p>
+              <ul className="list-disc list-inside space-y-1.5 text-slate-700 pl-1">
+                <li>
+                  <strong>Strict 72-Hour Retention:</strong> All chat messages and attachments are retained on the server for a maximum duration of 72 hours from the moment of creation. After 72 hours, records and files are permanently and irreversibly purged by automated server-side cleanup routines.
+                </li>
+                <li>
+                  <strong>Soft Deletion vs. Administrative Oversight:</strong> When a user deletes a message or clears conversation history, it immediately disappears from ordinary chat views. However, in accordance with institutional compliance and patient safety standards, records remain accessible to authorized administrators within the original 72-hour window. Deletion by a user does not extend or shorten the 72-hour hard expiration.
+                </li>
+                <li>
+                  <strong>Encryption In-Transit & At-Rest (No Misleading E2EE Claims):</strong> Communication is encrypted in transit using industry-standard Transport Layer Security (TLS/HTTPS) and stored encrypted at rest in Google Cloud Firestore. We do not claim end-to-end encryption (E2EE), as administrative oversight and server-side automation are required for institutional hospital governance.
+                </li>
+                <li>
+                  <strong>Patient Data & Clinical Privacy:</strong> JpMC Synapse is an institutional coordination tool. Faculty and staff must not transmit unredacted, identifiable patient records or sensitive diagnostic images that violate medical confidentiality laws or hospital clinical data policies.
+                </li>
+                <li>
+                  <strong>Push Notifications:</strong> Lock-screen push notifications generated for new chat messages display only sender attribution without exposing sensitive message bodies to unauthorized bystanders.
+                </li>
+              </ul>
+            </div>
+          </section>
+
+          {/* Section 7 */}
+          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
+                7
+              </span>
               <h2 className="text-base font-bold text-slate-900">Data Retention and Deletion</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed space-y-2 pl-8.5">
@@ -332,11 +364,11 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack }) 
             </div>
           </section>
 
-          {/* Section 7 */}
+          {/* Section 8 */}
           <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
             <div className="flex items-center gap-2.5">
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
-                7
+                8
               </span>
               <h2 className="text-base font-bold text-slate-900">Contact Information</h2>
             </div>

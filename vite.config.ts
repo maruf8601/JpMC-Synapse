@@ -6,7 +6,7 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
-    base: './',
+    base: '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -30,8 +30,8 @@ export default defineConfig(() => {
           background_color: '#004D40',
           display: 'standalone',
           orientation: 'portrait',
-          start_url: './',
-          scope: './',
+          start_url: '/',
+          scope: '/',
           icons: [
             {
               src: 'pwa-192x192.png',
@@ -103,22 +103,50 @@ export default defineConfig(() => {
       }),
     ],
     build: {
-      chunkSizeWarningLimit: 1000,
+      chunkSizeWarningLimit: 600,
       rollupOptions: {
         output: {
           manualChunks(id) {
-            if (id.includes('node_modules')) {
-              if (id.includes('firebase')) {
-                return 'vendor-firebase';
-              }
-              if (id.includes('lucide-react')) {
-                return 'vendor-icons';
-              }
-              if (id.includes('react') || id.includes('scheduler')) {
-                return 'vendor-react';
-              }
-              return 'vendor-utils';
+            if (!id.includes('node_modules')) {
+              return;
             }
+
+            // Framework: React core & DOM
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/scheduler/')
+            ) {
+              return 'vendor-react';
+            }
+
+            // Firebase: isolate Firestore (large bundle) from Auth & App core
+            if (id.includes('@firebase/firestore') || id.includes('/firebase/firestore')) {
+              return 'vendor-firestore';
+            }
+            if (id.includes('@firebase/auth') || id.includes('/firebase/auth')) {
+              return 'vendor-firebase-auth';
+            }
+            if (id.includes('firebase')) {
+              return 'vendor-firebase-core';
+            }
+
+            // UI Icons
+            if (id.includes('lucide-react')) {
+              return 'vendor-icons';
+            }
+
+            // Real-Time & Sockets
+            if (id.includes('socket.io-client') || id.includes('engine.io-client')) {
+              return 'vendor-socketio';
+            }
+
+            // Motion & Animation
+            if (id.includes('motion')) {
+              return 'vendor-motion';
+            }
+
+            return 'vendor-utils';
           },
         },
       },

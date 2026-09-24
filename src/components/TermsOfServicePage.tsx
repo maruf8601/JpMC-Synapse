@@ -276,6 +276,35 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ onBack }
               <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
                 6
               </span>
+              <h2 className="text-base font-bold text-slate-900">Interdepartmental Chat & Communication Rules</h2>
+            </div>
+            <div className="text-sm text-slate-600 leading-relaxed pl-8.5 space-y-2.5 text-xs">
+              <p>
+                The Interdepartmental Chat module provides internal coordination for Jamalpur Medical College departments. Use of this module is subject to the following binding conditions:
+              </p>
+              <ul className="list-disc list-inside space-y-1.5 text-slate-700 pl-1">
+                <li>
+                  <strong>Strict 72-Hour Automatic Deletion:</strong> All chat records, messages, and uploaded files expire 72 hours after initial transmission. They are permanently and irrevocably destroyed by automated server tasks.
+                </li>
+                <li>
+                  <strong>Administrative Oversight & Soft Deletion:</strong> When a user deletes a message, it is hidden from ordinary user displays. However, in accordance with public medical institution governance, records remain available for administrative audit throughout the remainder of their original 72-hour lifespan.
+                </li>
+                <li>
+                  <strong>No End-to-End Encryption (E2EE):</strong> Transport is encrypted using HTTPS/TLS and stored securely in Firestore, but communication is not end-to-end encrypted because institutional auditing is maintained.
+                </li>
+                <li>
+                  <strong>Patient Confidentiality:</strong> Users must never transmit unredacted, identifiable patient health records or diagnostic data that violate medical ethics or healthcare confidentiality standards.
+                </li>
+              </ul>
+            </div>
+          </section>
+
+          {/* Section 7 */}
+          <section className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-6 h-6 rounded-full bg-teal-50 text-[#006A60] text-xs font-bold flex items-center justify-center">
+                7
+              </span>
               <h2 className="text-base font-bold text-slate-900">Availability and Changes</h2>
             </div>
             <div className="text-sm text-slate-600 leading-relaxed pl-8.5 space-y-2">

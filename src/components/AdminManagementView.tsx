@@ -17,6 +17,8 @@ import {
   Megaphone,
   Sparkles,
   FolderArchive,
+  MessageSquare,
+  HardDrive,
 } from 'lucide-react';
 import { EventEntity, Language } from '../domain/models';
 import { toBengaliNumber } from '../domain/constants';
@@ -24,6 +26,8 @@ import { ReviewCenterView } from './ReviewCenterView';
 import { AnnouncementManagerView } from './AnnouncementManagerView';
 import { TelegramTextToMeeting } from './TelegramTextToMeeting';
 import { EventHistoryDriveView } from './EventHistoryDriveView';
+import { ChatOversightView } from './chat/ChatOversightView';
+import { ForumAdminSettingsModal } from './forum/ForumAdminSettingsModal';
 import { apiFetch } from '../config/api';
 import { auth } from '../services/firebaseClient';
 
@@ -51,7 +55,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   onSelectEvent,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'reviews' | 'announcements' | 'nlp_meeting' | 'drive_history' | 'telegram' | 'reminders'
+    'reviews' | 'announcements' | 'chat_oversight' | 'nlp_meeting' | 'drive_history' | 'telegram' | 'reminders' | 'forum_drive'
   >('reviews');
   const [webhookStatus, setWebhookStatus] = useState<string | null>(null);
   const [isSettingWebhook, setIsSettingWebhook] = useState(false);
@@ -221,6 +225,19 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
         <button
           type="button"
+          onClick={() => setActiveTab('chat_oversight')}
+          className={`py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+            activeTab === 'chat_oversight'
+              ? 'bg-white text-[#006A60] shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          <span>{language === 'bn' ? 'চ্যাট নজরদারি (72h)' : 'Chat Oversight (72h)'}</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('nlp_meeting')}
           className={`py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
             activeTab === 'nlp_meeting'
@@ -270,6 +287,19 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           <Bell className="w-3.5 h-3.5" />
           <span>{language === 'bn' ? 'স্মারক সেটিংস' : 'Reminders'}</span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('forum_drive')}
+          className={`py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+            activeTab === 'forum_drive'
+              ? 'bg-white text-[#006A60] shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <HardDrive className="w-3.5 h-3.5" />
+          <span>{language === 'bn' ? 'ফোরাম ড্রাইভ' : 'Forum Drive'}</span>
+        </button>
       </div>
 
       {/* 1. Review Center Tab */}
@@ -285,6 +315,11 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* 2. Announcements Manager Tab */}
       {activeTab === 'announcements' && (
         <AnnouncementManagerView />
+      )}
+
+      {/* 2.5. Chat Oversight Tab (Strict 72-Hour Institutional Retention Audit) */}
+      {activeTab === 'chat_oversight' && (
+        <ChatOversightView language={language} />
       )}
 
       {/* 3. Text to Meeting (Relocated Admin Tool) */}
@@ -505,6 +540,13 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               {isSendingTest ? 'পাঠানো হচ্ছে...' : language === 'bn' ? 'টেস্ট ব্রডকাস্ট পাঠান' : 'Send Test Broadcast'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* 8. Forum Google Drive Storage Tab */}
+      {activeTab === 'forum_drive' && (
+        <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-xs">
+          <ForumAdminSettingsModal onClose={() => setActiveTab('reviews')} />
         </div>
       )}
     </div>

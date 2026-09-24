@@ -13,6 +13,86 @@
       },
       "required": ["uid", "email"]
     },
+    "ForumPost": {
+      "title": "ForumPost",
+      "description": "Institutional discussion forum post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "topicId": { "type": "string" },
+        "topicLabel": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "status": { "type": "string", "enum": ["waiting_answer", "solved", "closed"] },
+        "isPinned": { "type": "boolean" },
+        "isRestricted": { "type": "boolean" },
+        "allowedUserIds": { "type": "array", "items": { "type": "string" } },
+        "acceptedAnswerId": { "type": "string" },
+        "replyCount": { "type": "number" },
+        "version": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "lastActivityAt": { "type": "string" }
+      },
+      "required": ["id", "title", "body", "topicId", "authorId", "authorName", "status", "replyCount", "createdAt", "updatedAt"]
+    },
+    "ForumComment": {
+      "title": "ForumComment",
+      "description": "Comment or reply in a discussion post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "postId": { "type": "string" },
+        "parentCommentId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "body": { "type": "string" },
+        "isAcceptedAnswer": { "type": "boolean" },
+        "version": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "isDeleted": { "type": "boolean" }
+      },
+      "required": ["id", "postId", "authorId", "authorName", "body", "createdAt", "updatedAt"]
+    },
+    "ForumRevision": {
+      "title": "ForumRevision",
+      "description": "Audit revision record for edited post or comment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "targetType": { "type": "string", "enum": ["post", "comment"] },
+        "targetId": { "type": "string" },
+        "editorId": { "type": "string" },
+        "editorName": { "type": "string" },
+        "editorRole": { "type": "string" },
+        "isPostAuthor": { "type": "boolean" },
+        "editedAt": { "type": "string" },
+        "previousContent": { "type": "string" }
+      },
+      "required": ["id", "targetType", "targetId", "editorId", "editorName", "editedAt", "previousContent"]
+    },
+    "ForumAttachment": {
+      "title": "ForumAttachment",
+      "description": "Attachment metadata for Drive-hosted files in discussions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "driveFileId": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileSize": { "type": "number" },
+        "mimeType": { "type": "string" },
+        "uploaderId": { "type": "string" },
+        "uploaderName": { "type": "string" },
+        "isRestricted": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "driveFileId", "fileName", "fileSize", "mimeType", "uploaderId", "createdAt"]
+    },
     "Event": {
       "title": "Event",
       "description": "Official schedule and meeting record of Jamalpur Medical College",
@@ -224,9 +304,84 @@
         "acknowledgedAt": { "type": "string" }
       },
       "required": ["announcementId", "uid", "seenAt"]
+    },
+    "ChatConversation": {
+      "title": "ChatConversation",
+      "description": "One-to-one interdepartmental chat thread between authorized JpMC staff",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participantIds": { "type": "array", "items": { "type": "string" } },
+        "lastMessageAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "participantIds", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Institutional chat message with 72-hour TTL and admin retention metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "content": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "image", "pdf", "document"] },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "deletedByUser": { "type": "boolean" }
+      },
+      "required": ["id", "conversationId", "senderId", "receiverId", "content", "type", "createdAt", "expiresAt"]
+    },
+    "ChatAttachment": {
+      "title": "ChatAttachment",
+      "description": "Encrypted or secured institutional attachment with 72-hour TTL",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "uploaderId": { "type": "string" },
+        "filename": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "size": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" }
+      },
+      "required": ["id", "conversationId", "uploaderId", "filename", "mimeType", "size", "createdAt", "expiresAt"]
+    },
+    "ChatAdminAuditLog": {
+      "title": "ChatAdminAuditLog",
+      "description": "Administrative access audit trail for institutional chat oversight",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "adminId": { "type": "string" },
+        "action": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "adminId", "action", "conversationId", "timestamp"]
     }
   },
   "firestore": {
+    "/conversations/{conversationId}": {
+      "schema": "ChatConversation",
+      "description": "One-to-one chat conversations"
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Chat messages with 72-hour retention"
+    },
+    "/chatAttachments/{attachmentId}": {
+      "schema": "ChatAttachment",
+      "description": "Institutional chat attachments with 72-hour retention"
+    },
+    "/chatAdminAuditLogs/{logId}": {
+      "schema": "ChatAdminAuditLog",
+      "description": "Admin oversight access audit logs"
+    },
     "/announcements/{announcementId}": {
       "schema": "Announcement",
       "description": "Official institutional popup announcements"
@@ -282,6 +437,22 @@
     "/reminders/{reminderId}": {
       "schema": "Reminder",
       "description": "Scheduled notification reminders"
+    },
+    "/forum_posts/{postId}": {
+      "schema": "ForumPost",
+      "description": "Discussion forum posts"
+    },
+    "/forum_comments/{commentId}": {
+      "schema": "ForumComment",
+      "description": "Discussion forum comments and nested replies"
+    },
+    "/forum_revisions/{revisionId}": {
+      "schema": "ForumRevision",
+      "description": "Discussion edit history revisions"
+    },
+    "/forum_attachments/{attachmentId}": {
+      "schema": "ForumAttachment",
+      "description": "Google Drive forum attachment metadata"
     }
   }
 }

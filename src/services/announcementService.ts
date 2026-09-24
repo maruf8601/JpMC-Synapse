@@ -154,7 +154,7 @@ export async function fetchActiveAnnouncements(
 
     return candidateList;
   } catch (err) {
-    console.error('[Announcements] Firestore fallback failed:', err);
+    console.warn('[Announcements] Firestore fallback query unavailable:', err);
     return [];
   }
 }

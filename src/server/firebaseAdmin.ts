@@ -192,13 +192,16 @@ export interface UserSessionData {
  */
 export async function createUserSession(
   name: string,
-  clientDeviceId?: string
+  clientDeviceId?: string,
+  pin?: string
 ): Promise<{
   success: boolean;
   session?: { token: string; sessionId: string; expiresAt: string };
   user?: UserAuthProfile;
   customToken?: string | null;
   error?: string;
+  message?: string;
+  hasPin?: boolean;
 }> {
   const trimmedName = (name || '').trim();
 
@@ -210,6 +213,32 @@ export async function createUserSession(
   const normalizedKey = trimmedName.toLowerCase().replace(/\s+/g, '_');
   const userHash = crypto.createHash('sha256').update(normalizedKey).digest('hex').slice(0, 14);
   const userId = `usr_${userHash}`;
+
+  const userDocRef = adminDb.collection('authorizedUsers').doc(userId);
+  const userSnap = await userDocRef.get();
+  const existingData = userSnap.exists ? userSnap.data() : null;
+
+  // Identity Safeguard: verify personal PIN if configured to prevent impersonation
+  if (existingData?.pinHash) {
+    if (!pin || !pin.trim()) {
+      return {
+        success: false,
+        error: 'PIN_REQUIRED',
+        hasPin: true,
+        message: 'এই নামের অ্যাকাউন্টে ব্যক্তিগত নিরাপত্তা পিন সক্রিয় রয়েছে। অনুগ্রহ করে আপনার ৪-৬ ডিজিটের পিন দিন।',
+      };
+    }
+
+    const submittedHash = crypto.createHash('sha256').update(pin.trim() + '_jpmc_salt_' + userId).digest('hex');
+    if (submittedHash !== existingData.pinHash) {
+      return {
+        success: false,
+        error: 'INVALID_PIN',
+        hasPin: true,
+        message: 'ব্যক্তিগত নিরাপত্তা পিন সঠিক নয়। অনুগ্রহ করে সঠিক পিন প্রদান করুন।',
+      };
+    }
+  }
 
   // Generate cryptographically secure session token (only the hash is stored in Firestore)
   const sessionToken = crypto.randomBytes(32).toString('hex');
@@ -232,27 +261,35 @@ export async function createUserSession(
 
   await adminDb.collection('userSessions').doc(sessionId).set(removeUndefinedFields(sessionDoc));
 
+  // Compute new PIN hash if user provided a PIN during registration/migration
+  let newPinHash: string | undefined = undefined;
+  if (!existingData?.pinHash && pin && pin.trim().length >= 4) {
+    newPinHash = crypto.createHash('sha256').update(pin.trim() + '_jpmc_salt_' + userId).digest('hex');
+  }
+
   // Store / update user profile in authorizedUsers collection with role: 'user'
-  const userDocRef = adminDb.collection('authorizedUsers').doc(userId);
-  const userSnap = await userDocRef.get();
   if (!userSnap.exists) {
-    await userDocRef.set({
-      uid: userId,
-      displayName: trimmedName,
-      role: 'user',
-      active: true,
-      authMethod: 'institutional_code',
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    });
+    await userDocRef.set(
+      removeUndefinedFields({
+        uid: userId,
+        displayName: trimmedName,
+        role: 'user',
+        active: true,
+        authMethod: 'institutional_code',
+        pinHash: newPinHash || null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      })
+    );
   } else {
     await userDocRef.set(
-      {
+      removeUndefinedFields({
         displayName: trimmedName,
         role: 'user', // Normal user login ALWAYS strictly enforces role: 'user'
         active: true,
+        ...(newPinHash ? { pinHash: newPinHash } : {}),
         updatedAt: nowIso,
-      },
+      }),
       { merge: true }
     );
   }
@@ -384,7 +421,7 @@ export interface NotificationDeliveryLog {
   deviceId: string;
   userId?: string;
   fcmToken: string;
-  type: 'reminder_120m' | 'reminder_30m' | 'reminder_custom' | 'morning_briefing' | 'test_push' | 'announcement';
+  type: 'reminder_120m' | 'reminder_30m' | 'reminder_custom' | 'morning_briefing' | 'test_push' | 'announcement' | 'forum_mention' | 'forum_reply';
   title: string;
   body: string;
   status: 'sent' | 'failed';
