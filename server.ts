@@ -7,17 +7,34 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const isProduction =
-  process.env.NODE_ENV === 'production' ||
-  Boolean(process.env.K_SERVICE);
+const distDir = path.resolve(process.cwd(), 'dist');
+const distServer = path.resolve(distDir, 'server.cjs');
+const distHtml = path.resolve(distDir, 'index.html');
 
-const distServer = path.resolve(process.cwd(), 'dist', 'server.cjs');
+// In production / Cloud Run: ensure build artifacts exist
+if (!fs.existsSync(distServer) || !fs.existsSync(distHtml)) {
+  console.log('[server.ts] Production build artifacts not found in dist/. Triggering build...');
+  try {
+    const { execSync } = await import('node:child_process');
+    execSync('npm run build', { stdio: 'inherit' });
+  } catch (buildErr) {
+    console.error('[server.ts] Automated build attempt failed:', buildErr);
+  }
+}
 
-// In production / Cloud Run: run pre-bundled production server bundle
-if (isProduction && fs.existsSync(distServer)) {
-  await import(distServer);
+if (fs.existsSync(distServer)) {
+  console.log('[server.ts] Loading pre-bundled production server from dist/server.cjs...');
+  await import(pathToFileURL(distServer).href);
 } else {
-  // In development (runs under tsx)
-  await import('./server.source.ts');
+  console.log('[server.ts] dist/server.cjs missing. Spawning server via tsx loader...');
+  const { fork } = await import('node:child_process');
+  const tsxCli = path.resolve(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  if (fs.existsSync(tsxCli)) {
+    fork(tsxCli, ['server.source.ts'], { stdio: 'inherit' });
+  } else {
+    // Fallback import
+    await import('./server.source.ts');
+  }
 }

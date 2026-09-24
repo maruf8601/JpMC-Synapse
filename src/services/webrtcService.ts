@@ -3,12 +3,12 @@
  * Organization: Jamalpur Medical College (JpMC)
  *
  * Implements:
- * - Dynamic STUN / TURN server configuration retrieval
- * - RTCPeerConnection lifecycle (Offer, Answer, ICE Candidates)
- * - Microphone & Camera capture with device fallback
- * - Mute / Unmute, Camera Enable / Disable, Camera Flipping (front/rear)
- * - Safe resource cleanup (stops MediaStream tracks, closes peer connection)
- * - Call state events & timer
+ * - Dynamic STUN / TURN server configuration retrieval with reliable fallback
+ * - Immediate socket signal buffering (zero dropped SDP offers or early ICE candidates)
+ * - Two-way readiness handshake (Caller sends offer when Callee is ready)
+ * - Safe track collection (both audio and video tracks preserved across ontrack events)
+ * - Camera & Microphone capture with progressive fallback
+ * - Mute / Unmute, Camera Flip, Hardware Track cleanup
  */
 
 import { chatSocket } from './chatSocketClient';
@@ -45,18 +45,18 @@ function createSilentAudioStream(): MediaStream {
       const osc = ctx.createOscillator();
       const dst = ctx.createMediaStreamDestination();
       const gain = ctx.createGain();
-      gain.gain.value = 0; // Silent
+      gain.gain.value = 0.0001; // Audible to WebRTC encoder, silent to human ear
       osc.connect(gain);
       gain.connect(dst);
       osc.start();
       const track = dst.stream.getAudioTracks()[0];
       if (track) {
-        track.enabled = false;
+        track.enabled = true;
         return dst.stream;
       }
     }
   } catch (e) {
-    console.warn('[WebRTC] Silent audio track generator fallback unavailable:', e);
+    console.warn('[WebRTC] Silent audio generator fallback unavailable:', e);
   }
   return new MediaStream();
 }
@@ -67,20 +67,31 @@ export class WebRtcCallSession {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private isCleanedUp: boolean = false;
+  private isStarted: boolean = false;
   private facingMode: 'user' | 'environment' = 'user';
   private hasPermissionError: boolean = false;
+
+  // Signal and ICE Candidate buffers to eliminate race conditions
+  private earlySignalQueue: any[] = [];
   private queuedCandidates: any[] = [];
+  private offerRetryTimer: any = null;
+  private unbindListeners: (() => void)[] = [];
 
   constructor(config: WebRtcCallConfig) {
     this.config = config;
+    // Bind socket events IMMEDIATELY so no incoming signal is ever lost during media acquisition
+    this.bindSocketSignals();
   }
 
   /**
-   * Initializes call: fetches STUN/TURN config, acquires media, binds socket signaling.
+   * Initializes call: acquires STUN/TURN, captures media, binds peer tracks, and signals readiness.
    */
   public async start(): Promise<void> {
+    if (this.isCleanedUp || this.isStarted) return;
+    this.isStarted = true;
+
     try {
-      // 1. Fetch ICE Servers configuration from server
+      // 1. Fetch ICE Servers configuration from server (with robust STUN fallbacks)
       const iceServers = await this.fetchIceServers();
 
       // 2. Initialize RTCPeerConnection
@@ -89,7 +100,117 @@ export class WebRtcCallSession {
         iceCandidatePoolSize: 2,
       });
 
-      // 3. Acquire Local Audio / Video Media
+      // 3. Setup Remote Track Listener
+      this.remoteStream = new MediaStream();
+      this.peerConnection.ontrack = (event) => {
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+
+        // Add track directly if not already present
+        if (event.track) {
+          const exists = this.remoteStream.getTracks().some((t) => t.id === event.track.id);
+          if (!exists) {
+            this.remoteStream.addTrack(event.track);
+          }
+        }
+
+        // Also incorporate any tracks present in event.streams
+        if (event.streams && event.streams[0]) {
+          event.streams[0].getTracks().forEach((track) => {
+            const exists = this.remoteStream!.getTracks().some((t) => t.id === track.id);
+            if (!exists) {
+              this.remoteStream!.addTrack(track);
+            }
+          });
+        }
+
+        console.log('[WebRTC] ontrack fired. Total remote tracks:', {
+          audio: this.remoteStream.getAudioTracks().length,
+          video: this.remoteStream.getVideoTracks().length,
+        });
+
+        this.config.onRemoteStream?.(this.remoteStream);
+      };
+
+      // 4. Setup ICE Candidate Generation
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          chatSocket.emit('call:signal', {
+            callId: this.config.callId,
+            targetUserId: this.config.targetUserId,
+            signal: { candidate: event.candidate },
+          });
+        }
+      };
+
+      // 5. Setup Connection State Monitoring
+      this.peerConnection.onconnectionstatechange = () => {
+        if (this.peerConnection) {
+          const state = this.peerConnection.connectionState;
+          console.log('[WebRTC] Connection state:', state);
+          this.config.onConnectionStateChange?.(state);
+        }
+      };
+
+      this.peerConnection.oniceconnectionstatechange = () => {
+        if (this.peerConnection) {
+          console.log('[WebRTC] ICE state:', this.peerConnection.iceConnectionState);
+        }
+      };
+
+      // 6. Acquire Local Audio / Video Media with graceful fallbacks
+      await this.acquireLocalMedia();
+
+      // Add local tracks to peer connection
+      if (this.localStream && this.peerConnection) {
+        this.localStream.getTracks().forEach((track) => {
+          try {
+            this.peerConnection?.addTrack(track, this.localStream!);
+          } catch (e) {
+            console.warn('[WebRTC] Error adding local track:', e);
+          }
+        });
+      }
+
+      this.config.onLocalStream?.(this.localStream!);
+
+      // 7. Process any early signals that arrived while media was being acquired
+      while (this.earlySignalQueue.length > 0) {
+        const earlySignal = this.earlySignalQueue.shift();
+        await this.handleIncomingSignal(earlySignal);
+      }
+
+      // 8. If Callee, notify Caller that local setup is complete and ready for SDP offer
+      if (!this.config.isCaller) {
+        chatSocket.emit('call:ready', {
+          callId: this.config.callId,
+          targetUserId: this.config.targetUserId,
+        });
+      } else if (this.config.autoOffer) {
+        // If caller and autoOffer requested
+        await this.sendOffer();
+      }
+    } catch (err: any) {
+      console.warn('[WebRTC] Call start error:', err?.message || err);
+      this.config.onError?.(err);
+    }
+  }
+
+  /**
+   * Acquires local media with progressive fallback to prevent blocking failures.
+   */
+  private async acquireLocalMedia(): Promise<void> {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      console.warn('[WebRTC] getUserMedia is not supported in this browser.');
+      this.hasPermissionError = true;
+      this.config.onPermissionDenied?.('MediaDevices API is not available.');
+      this.localStream = createSilentAudioStream();
+      return;
+    }
+
+    // Level 1: Attempt requested type (Audio or Video)
+    try {
       const constraints: MediaStreamConstraints = {
         audio: {
           echoCancellation: true,
@@ -105,97 +226,47 @@ export class WebRtcCallSession {
               }
             : false,
       };
+      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      return;
+    } catch (level1Err: any) {
+      console.warn('[WebRTC] Level 1 getUserMedia attempt notice:', level1Err?.message || level1Err);
+    }
 
+    // Level 2: Try standard unconstrained video + audio (if video requested)
+    if (this.config.type === 'video') {
       try {
-        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
-          this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        } else {
-          throw new Error('MediaDevices API not available in this environment');
-        }
-      } catch (mediaErr: any) {
-        // If video fails (e.g. no webcam on desktop or camera permission blocked), try audio only fallback
-        if (this.config.type === 'video') {
-          try {
-            console.warn('[WebRTC] Camera unavailable, attempting audio-only fallback...');
-            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          } catch (audioErr: any) {
-            console.warn('[WebRTC] Audio/Camera permission not granted:', audioErr?.message || audioErr);
-            this.hasPermissionError = true;
-            this.config.onPermissionDenied?.(
-              audioErr?.message || 'Microphone and Camera permission not granted in browser.'
-            );
-            this.localStream = createSilentAudioStream();
-          }
-        } else {
-          console.warn('[WebRTC] Microphone permission not granted:', mediaErr?.message || mediaErr);
-          this.hasPermissionError = true;
-          this.config.onPermissionDenied?.(
-            mediaErr?.message || 'Microphone permission not granted in browser.'
-          );
-          this.localStream = createSilentAudioStream();
-        }
-      }
-
-      this.config.onLocalStream?.(this.localStream);
-
-      // Add local tracks to peer connection
-      if (this.localStream) {
-        this.localStream.getTracks().forEach((track) => {
-          if (this.peerConnection && this.localStream) {
-            this.peerConnection.addTrack(track, this.localStream);
-          }
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: true,
         });
+        return;
+      } catch (level2Err: any) {
+        console.warn('[WebRTC] Level 2 getUserMedia attempt notice:', level2Err?.message || level2Err);
       }
+    }
 
-      // 4. Handle Remote Track Events
-      this.peerConnection.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-          this.remoteStream = event.streams[0];
-          this.config.onRemoteStream?.(this.remoteStream);
-        }
-      };
-
-      // 5. Handle ICE Candidates
-      this.peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          chatSocket.emit('call:signal', {
-            callId: this.config.callId,
-            targetUserId: this.config.targetUserId,
-            signal: { candidate: event.candidate },
-          });
-        }
-      };
-
-      this.peerConnection.onconnectionstatechange = () => {
-        if (this.peerConnection) {
-          const state = this.peerConnection.connectionState;
-          this.config.onConnectionStateChange?.(state);
-          if (state === 'failed' || state === 'closed' || state === 'disconnected') {
-            console.log('[WebRTC] Connection state changed to:', state);
-          }
-        }
-      };
-
-      // 6. Listen to incoming signaling from socket
-      this.bindSocketSignals();
-
-      // 7. If caller and peer is already accepted/ready, offer can be sent
-      if (this.config.isCaller && this.config.autoOffer) {
-        await this.sendOffer();
-      }
-    } catch (err: any) {
-      console.warn('[WebRTC] Call setup note:', err?.message || err);
-      this.config.onError?.(err);
-      this.cleanup();
+    // Level 3: Fallback to audio only
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      return;
+    } catch (audioOnlyErr: any) {
+      console.warn('[WebRTC] Microphone permission denied or unavailable:', audioOnlyErr?.message || audioOnlyErr);
+      this.hasPermissionError = true;
+      this.config.onPermissionDenied?.(
+        audioOnlyErr?.message || 'Microphone access was denied. Please allow microphone permissions in browser.'
+      );
+      this.localStream = createSilentAudioStream();
     }
   }
 
   /**
-   * Generates and transmits SDP offer to the remote peer after call acceptance.
+   * Generates and transmits SDP offer to the remote peer.
    */
   public async sendOffer(): Promise<void> {
     if (!this.peerConnection || this.isCleanedUp) return;
+
     try {
+      // Create and set local offer
       const offer = await this.peerConnection.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: this.config.type === 'video',
@@ -207,9 +278,128 @@ export class WebRtcCallSession {
         targetUserId: this.config.targetUserId,
         signal: { sdp: this.peerConnection.localDescription },
       });
+
+      // Retransmission watchdog: If still in have-local-offer after 3.5 seconds, resend offer
+      if (this.offerRetryTimer) clearTimeout(this.offerRetryTimer);
+      this.offerRetryTimer = setTimeout(async () => {
+        if (
+          this.peerConnection &&
+          !this.isCleanedUp &&
+          this.peerConnection.signalingState === 'have-local-offer' &&
+          !this.peerConnection.remoteDescription
+        ) {
+          console.log('[WebRTC] Retrying SDP offer transmission...');
+          chatSocket.emit('call:signal', {
+            callId: this.config.callId,
+            targetUserId: this.config.targetUserId,
+            signal: { sdp: this.peerConnection.localDescription },
+          });
+        }
+      }, 3500);
     } catch (err: any) {
-      console.warn('[WebRTC] Send offer note:', err?.message || err);
+      console.warn('[WebRTC] Error sending offer:', err?.message || err);
     }
+  }
+
+  /**
+   * Processes incoming WebRTC signaling data (SDP Offer/Answer & ICE Candidates).
+   */
+  private async handleIncomingSignal(signal: any): Promise<void> {
+    if (!signal || !this.peerConnection || this.isCleanedUp) return;
+
+    try {
+      if (signal.sdp) {
+        const remoteDesc = new RTCSessionDescription(signal.sdp);
+        await this.peerConnection.setRemoteDescription(remoteDesc);
+
+        // Clear offer retry timer once remote description is set
+        if (this.offerRetryTimer) {
+          clearTimeout(this.offerRetryTimer);
+          this.offerRetryTimer = null;
+        }
+
+        // Drain any ICE candidates that arrived before remoteDescription
+        while (this.queuedCandidates.length > 0) {
+          const cand = this.queuedCandidates.shift();
+          if (cand && this.peerConnection) {
+            try {
+              await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (candErr) {
+              console.warn('[WebRTC] Note adding buffered candidate:', candErr);
+            }
+          }
+        }
+
+        // If offer received, generate and return SDP answer
+        if (signal.sdp.type === 'offer') {
+          const answer = await this.peerConnection.createAnswer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: this.config.type === 'video',
+          });
+          await this.peerConnection.setLocalDescription(answer);
+
+          chatSocket.emit('call:signal', {
+            callId: this.config.callId,
+            targetUserId: this.config.targetUserId,
+            signal: { sdp: this.peerConnection.localDescription },
+          });
+        }
+      } else if (signal.candidate) {
+        if (this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
+          try {
+            await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } catch (iceErr) {
+            console.warn('[WebRTC] Note adding direct candidate:', iceErr);
+          }
+        } else {
+          this.queuedCandidates.push(signal.candidate);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[WebRTC] Error processing incoming signal:', err?.message || err);
+    }
+  }
+
+  /**
+   * Binds socket events immediately in constructor to guarantee no dropped messages.
+   */
+  private bindSocketSignals(): void {
+    const unsubSignal = chatSocket.on('call:signal', async (data: any) => {
+      if (this.isCleanedUp || data.callId !== this.config.callId) return;
+
+      if (!this.peerConnection) {
+        // Buffer signal until peerConnection finishes local media acquisition
+        this.earlySignalQueue.push(data.signal);
+      } else {
+        await this.handleIncomingSignal(data.signal);
+      }
+    });
+
+    const unsubReady = chatSocket.on('call:ready', async (data: any) => {
+      if (this.isCleanedUp || data.callId !== this.config.callId) return;
+      // Peer is ready, send offer if caller
+      if (this.config.isCaller) {
+        console.log('[WebRTC] Remote peer reported ready, transmitting SDP offer.');
+        await this.sendOffer();
+      }
+    });
+
+    const unsubAccepted = chatSocket.on('call:accepted', async (data: any) => {
+      if (this.isCleanedUp || data.callId !== this.config.callId) return;
+      if (this.config.isCaller) {
+        console.log('[WebRTC] Call accepted by peer, transmitting SDP offer.');
+        await this.sendOffer();
+      }
+    });
+
+    const unsubEnded = chatSocket.on('call:ended', (data: any) => {
+      if (data.callId === this.config.callId) {
+        this.config.onCallEnded?.(data.reason || 'ended');
+        this.cleanup();
+      }
+    });
+
+    this.unbindListeners = [unsubSignal, unsubReady, unsubAccepted, unsubEnded];
   }
 
   /**
@@ -229,11 +419,7 @@ export class WebRtcCallSession {
         },
         video:
           this.config.type === 'video'
-            ? {
-                facingMode: this.facingMode,
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-              }
+            ? { facingMode: this.facingMode }
             : false,
       };
 
@@ -265,68 +451,6 @@ export class WebRtcCallSession {
       console.warn('[WebRTC] Permission retry was not granted:', err?.message || err);
       return false;
     }
-  }
-
-  /**
-   * Binds socket events for incoming signaling data.
-   */
-  private bindSocketSignals() {
-    chatSocket.on('call:signal', async (data: any) => {
-      if (this.isCleanedUp || data.callId !== this.config.callId) return;
-
-      try {
-        const { signal } = data;
-        if (!this.peerConnection) return;
-
-        if (signal.sdp) {
-          const remoteDesc = new RTCSessionDescription(signal.sdp);
-          await this.peerConnection.setRemoteDescription(remoteDesc);
-
-          // Drain queued ICE candidates
-          while (this.queuedCandidates.length > 0) {
-            const cand = this.queuedCandidates.shift();
-            if (cand && this.peerConnection) {
-              try {
-                await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-              } catch (e) {
-                console.warn('[WebRTC] Note adding queued candidate:', e);
-              }
-            }
-          }
-
-          // If we received an offer, generate answer
-          if (signal.sdp.type === 'offer') {
-            const answer = await this.peerConnection.createAnswer();
-            await this.peerConnection.setLocalDescription(answer);
-
-            chatSocket.emit('call:signal', {
-              callId: this.config.callId,
-              targetUserId: this.config.targetUserId,
-              signal: { sdp: this.peerConnection.localDescription },
-            });
-          }
-        } else if (signal.candidate) {
-          if (this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
-            try {
-              await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
-            } catch (e) {
-              console.warn('[WebRTC] Note adding ice candidate:', e);
-            }
-          } else {
-            this.queuedCandidates.push(signal.candidate);
-          }
-        }
-      } catch (err) {
-        console.warn('[WebRTC] Signal handling error:', err);
-      }
-    });
-
-    chatSocket.on('call:ended', (data: any) => {
-      if (data.callId === this.config.callId) {
-        this.config.onCallEnded?.(data.reason || 'ended');
-        this.cleanup();
-      }
-    });
   }
 
   /**
@@ -363,7 +487,6 @@ export class WebRtcCallSession {
 
     this.facingMode = this.facingMode === 'user' ? 'environment' : 'user';
 
-    // Stop current video track
     const oldVideoTrack = this.localStream.getVideoTracks()[0];
     if (oldVideoTrack) {
       oldVideoTrack.stop();
@@ -378,7 +501,6 @@ export class WebRtcCallSession {
       if (newVideoTrack) {
         this.localStream.addTrack(newVideoTrack);
 
-        // Replace track on peer connection sender
         const sender = this.peerConnection
           ?.getSenders()
           .find((s) => s.track?.kind === 'video');
@@ -398,6 +520,18 @@ export class WebRtcCallSession {
     if (this.isCleanedUp) return;
     this.isCleanedUp = true;
 
+    if (this.offerRetryTimer) {
+      clearTimeout(this.offerRetryTimer);
+      this.offerRetryTimer = null;
+    }
+
+    this.unbindListeners.forEach((unsub) => {
+      try {
+        unsub();
+      } catch {}
+    });
+    this.unbindListeners = [];
+
     // Release local media devices (releases hardware mic/cam indicator)
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
@@ -406,6 +540,15 @@ export class WebRtcCallSession {
         } catch {}
       });
       this.localStream = null;
+    }
+
+    if (this.remoteStream) {
+      this.remoteStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+      this.remoteStream = null;
     }
 
     if (this.peerConnection) {
@@ -417,9 +560,22 @@ export class WebRtcCallSession {
   }
 
   /**
-   * Fetches STUN/TURN server configuration.
+   * Fetches STUN/TURN server configuration with broad public fallbacks.
    */
   private async fetchIceServers(): Promise<RTCIceServer[]> {
+    const fallbackServers: RTCIceServer[] = [
+      {
+        urls: [
+          'stun:stun.l.google.com:19302',
+          'stun:stun1.l.google.com:19302',
+          'stun:stun2.l.google.com:19302',
+          'stun:stun3.l.google.com:19302',
+          'stun:stun4.l.google.com:19302',
+          'stun:stun.services.mozilla.com',
+        ],
+      },
+    ];
+
     try {
       const authHeaders = await getAuthHeader();
       const res = await apiFetch('/api/chat/webrtc/config', {
@@ -427,7 +583,7 @@ export class WebRtcCallSession {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.iceServers && Array.isArray(data.iceServers)) {
+        if (data.iceServers && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
           return data.iceServers;
         }
       }
@@ -435,9 +591,6 @@ export class WebRtcCallSession {
       console.warn('[WebRTC] Config fetch fallback to public STUN:', err);
     }
 
-    return [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ];
+    return fallbackServers;
   }
 }

@@ -268,6 +268,25 @@ export function initChatSocketServer(httpServer: HttpServer): SocketIOServer {
       }
     });
 
+    // 2b. Call Ready (Peer is fully initialized with media & ready for SDP offer)
+    socket.on('call:ready', ({ callId, targetUserId }) => {
+      const session = activeCalls.get(callId);
+      const destinationId =
+        targetUserId ||
+        (session
+          ? session.callerId === user.uid
+            ? session.receiverId
+            : session.callerId
+          : null);
+
+      if (destinationId) {
+        io.to(`user:${destinationId}`).emit('call:ready', {
+          callId,
+          senderId: user.uid,
+        });
+      }
+    });
+
     // 3. Decline Call
     socket.on('call:decline', ({ callId, callerId, reason }) => {
       const session = activeCalls.get(callId);

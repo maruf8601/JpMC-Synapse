@@ -101,6 +101,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   const [isRetryingPermission, setIsRetryingPermission] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [isAudioBlocked, setIsAudioBlocked] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -115,21 +116,55 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
     }
   }, [callStatus, call.isIncoming]);
 
-  // Synchronize media streams to video/audio DOM elements whenever streams or elements update
+  // Synchronize local media stream to local video element
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
     }
   }, [localStream, callStatus, isExpanded]);
 
+  // Synchronize remote media stream to video and audio elements with guaranteed playback
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-    if (remoteAudioRef.current && remoteStream) {
-      remoteAudioRef.current.srcObject = remoteStream;
+    if (remoteStream) {
+      // 1. Remote Video Element (Muted so video frames render immediately without autoplay restriction)
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play().catch((err) => {
+          console.warn('[WebRTC] remoteVideo play error:', err);
+        });
+      }
+
+      // 2. Remote Audio Element (Plays incoming voice)
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStream;
+        const playPromise = remoteAudioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              setIsAudioBlocked(false);
+            })
+            .catch((err) => {
+              console.warn('[WebRTC] remoteAudio play error:', err);
+              // Browser autoplay policy might require a user interaction
+              setIsAudioBlocked(true);
+            });
+        }
+      }
     }
   }, [remoteStream, callStatus, isExpanded]);
+
+  const unlockAudio = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current
+        .play()
+        .then(() => setIsAudioBlocked(false))
+        .catch(() => {});
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.play().catch(() => {});
+    }
+  };
 
   // Setup WebRTC Call Session when call is accepted or outgoing
   const initializeCallSession = (isCaller: boolean) => {
@@ -139,6 +174,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
       targetUserId: call.targetUserId,
       isCaller,
       type: call.type,
+      autoOffer: false, // Offer is sent once receiver reports readiness
       onLocalStream: (stream) => {
         setLocalStream(stream);
       },
@@ -154,8 +190,8 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
       onPermissionDenied: (msg) => {
         setPermissionNotice(
           language === 'bn'
-            ? 'মাইক্রোফোন/ক্যামেরার অনুমতি ব্লক রয়েছে। আপনি শুনতে পারবেন, অনুমতি দিতে "অনুমতি দিন" চাপুন।'
-            : 'Microphone/camera permission was not granted. You are in listen-only mode.'
+            ? 'মাইক্রোফোন/ক্যামেরার অনুমতি প্রয়োজন। অনুমতি দিতে "অনুমতি দিন" চাপুন।'
+            : 'Microphone/camera permission was not granted. Please allow device access.'
         );
       },
       onError: (err) => {
@@ -192,8 +228,6 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
     const unsubAccepted = chatSocket.on('call:accepted', (data: any) => {
       if (data.callId === call.callId) {
         setCallStatus('connected');
-        // Remote peer has accepted, send SDP offer now
-        sessionRef.current?.sendOffer();
       }
     });
 
@@ -240,6 +274,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   }, []);
 
   const handleAccept = () => {
+    // Callee accepts: send accept event, then initialize local session which will emit call:ready
     chatSocket.emit('call:accept', {
       callId: call.callId,
       callerId: call.targetUserId,
@@ -295,20 +330,35 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Check if remote video tracks are live
+  const hasRemoteVideo =
+    call.type === 'video' &&
+    remoteStream &&
+    remoteStream.getVideoTracks().length > 0 &&
+    remoteStream.getVideoTracks().some((t) => t.readyState === 'live');
+
   // INCOMING CALL PROMPT SCREEN
   if (call.isIncoming && callStatus === 'ringing') {
     return (
       <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center text-white flex flex-col items-center animate-pulse">
           <div className="w-20 h-20 rounded-full bg-teal-600/30 border-2 border-teal-400 flex items-center justify-center mb-4 text-2xl font-bold shadow-lg shadow-teal-500/20">
-            {call.type === 'video' ? <Video className="w-8 h-8 text-teal-300" /> : <Phone className="w-8 h-8 text-teal-300" />}
+            {call.type === 'video' ? (
+              <Video className="w-8 h-8 text-teal-300" />
+            ) : (
+              <Phone className="w-8 h-8 text-teal-300" />
+            )}
           </div>
 
           <h3 className="text-xl font-bold mb-1 truncate max-w-[240px]">{call.targetUserName}</h3>
           <p className="text-sm text-teal-300 font-medium mb-6">
             {call.type === 'video'
-              ? language === 'bn' ? 'ইনকামিং ভিডিও কল...' : 'Incoming Video Call...'
-              : language === 'bn' ? 'ইনকামিং অডিও কল...' : 'Incoming Audio Call...'}
+              ? language === 'bn'
+                ? 'ইনকামিং ভিডিও কল...'
+                : 'Incoming Video Call...'
+              : language === 'bn'
+              ? 'ইনকামিং অডিও কল...'
+              : 'Incoming Audio Call...'}
           </p>
 
           <div className="flex items-center justify-center gap-8 w-full">
@@ -340,26 +390,55 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   // ACTIVE CALL SCREEN (AUDIO OR VIDEO)
   return (
     <div
+      onClick={unlockAudio}
       className={`fixed z-50 transition-all ${
         isExpanded
           ? 'inset-0 bg-slate-950 flex flex-col'
           : 'bottom-4 right-4 w-80 sm:w-96 rounded-2xl shadow-2xl bg-slate-900 border border-slate-700 overflow-hidden'
       }`}
     >
-      {/* Remote Audio Track (Hidden playback) */}
+      {/* Remote Audio Track (Plays incoming voice) */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
       {/* Main Video / Visual Area */}
-      <div className={`relative bg-slate-950 flex items-center justify-center ${isExpanded ? 'flex-1 w-full' : 'h-56'}`}>
+      <div
+        className={`relative bg-slate-950 flex items-center justify-center ${
+          isExpanded ? 'flex-1 w-full' : 'h-56'
+        }`}
+      >
         {call.type === 'video' ? (
           <>
-            {/* Remote Video Stream */}
+            {/* Remote Video Stream (Muted to ensure instant autoplay in all browsers; audio comes from <audio>) */}
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover"
+              muted
+              className={`w-full h-full object-cover transition-opacity duration-300 ${
+                hasRemoteVideo ? 'opacity-100' : 'opacity-0'
+              }`}
             />
+
+            {/* Fallback avatar if remote video track hasn't arrived yet */}
+            {!hasRemoteVideo && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
+                <div className="w-20 h-20 rounded-full bg-teal-800/80 border-2 border-teal-400 flex items-center justify-center font-bold text-white text-2xl shadow-lg mb-3">
+                  {call.targetUserName.charAt(0).toUpperCase()}
+                </div>
+                <h4 className="text-white font-bold text-base truncate max-w-[200px]">
+                  {call.targetUserName}
+                </h4>
+                <p className="text-teal-300 text-xs mt-1 animate-pulse">
+                  {callStatus === 'connected'
+                    ? language === 'bn'
+                      ? 'ভিডিও লোড হচ্ছে...'
+                      : 'Connecting video...'
+                    : language === 'bn'
+                    ? 'কল বাজছে...'
+                    : 'Ringing...'}
+                </p>
+              </div>
+            )}
 
             {/* Local Video Stream Preview (PIP) */}
             <div className="absolute top-3 right-3 w-24 h-32 sm:w-28 sm:h-36 rounded-xl overflow-hidden border border-white/20 shadow-md bg-black z-10">
@@ -378,13 +457,19 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
             <div className="w-20 h-20 rounded-full bg-teal-800/80 border-2 border-teal-400 flex items-center justify-center font-bold text-white text-2xl shadow-lg mb-3">
               {call.targetUserName.charAt(0).toUpperCase()}
             </div>
-            <h4 className="text-white font-bold text-base truncate max-w-[200px]">{call.targetUserName}</h4>
+            <h4 className="text-white font-bold text-base truncate max-w-[200px]">
+              {call.targetUserName}
+            </h4>
             <p className="text-teal-300 text-xs mt-1">
               {callStatus === 'connected'
                 ? formatDuration(duration)
                 : callStatus === 'ringing'
-                ? (language === 'bn' ? 'কল বাজছে...' : 'Ringing...')
-                : (language === 'bn' ? 'কল সমাপ্ত' : 'Call Ended')}
+                ? language === 'bn'
+                  ? 'কল বাজছে...'
+                  : 'Ringing...'
+                : language === 'bn'
+                ? 'কল সমাপ্ত'
+                : 'Call Ended'}
             </p>
           </div>
         )}
@@ -394,11 +479,27 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
           <span className="px-2.5 py-1 bg-black/40 backdrop-blur-xs rounded-full text-white text-[11px] font-mono">
             {callStatus === 'connected' ? formatDuration(duration) : callStatus.toUpperCase()}
           </span>
+          {isAudioBlocked && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                unlockAudio();
+              }}
+              className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-full text-[11px] flex items-center gap-1 shadow-sm animate-bounce cursor-pointer"
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              <span>{language === 'bn' ? 'অডিও চালু করুন' : 'Tap for Sound'}</span>
+            </button>
+          )}
         </div>
 
         <button
           type="button"
-          onClick={() => setIsExpanded((prev) => !prev)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsExpanded((prev) => !prev);
+          }}
           className="absolute top-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white z-20 transition cursor-pointer"
           title={isExpanded ? 'Minimize' : 'Maximize'}
         >
@@ -416,25 +517,24 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
           <button
             type="button"
             disabled={isRetryingPermission}
-            onClick={async () => {
+            onClick={async (e) => {
+              e.stopPropagation();
               setIsRetryingPermission(true);
               const granted = await session?.retryMediaPermissions();
               setIsRetryingPermission(false);
               if (granted) {
                 setPermissionNotice(null);
-              } else {
-                alert(
-                  language === 'bn'
-                    ? 'অনুগ্রহ করে ব্রাউজারের অ্যাড্রেস বার বা লক আইকনে ক্লিক করে মাইক্রোফোন/ক্যামেরা পারমিশন সক্রিয় করুন।'
-                    : 'Please click the lock icon in your browser address bar to allow microphone/camera access.'
-                );
               }
             }}
             className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-md text-[11px] font-semibold shrink-0 cursor-pointer shadow-xs"
           >
             {isRetryingPermission
-              ? (language === 'bn' ? 'চেক হচ্ছে...' : 'Checking...')
-              : (language === 'bn' ? 'অনুমতি দিন' : 'Grant Access')}
+              ? language === 'bn'
+                ? 'চেক হচ্ছে...'
+                : 'Checking...'
+              : language === 'bn'
+              ? 'অনুমতি দিন'
+              : 'Grant Access'}
           </button>
         </div>
       )}
@@ -444,7 +544,10 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
         {/* Mute/Unmute */}
         <button
           type="button"
-          onClick={handleToggleMute}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleToggleMute();
+          }}
           className={`p-3 rounded-full transition cursor-pointer ${
             isMuted ? 'bg-amber-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
           }`}
@@ -458,9 +561,14 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
           <>
             <button
               type="button"
-              onClick={handleToggleVideo}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleVideo();
+              }}
               className={`p-3 rounded-full transition cursor-pointer ${
-                !isVideoEnabled ? 'bg-amber-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                !isVideoEnabled
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
               }`}
               title={isVideoEnabled ? 'Turn Off Video' : 'Turn On Video'}
             >
@@ -470,7 +578,10 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
             {/* Switch Camera (mobile front/back) */}
             <button
               type="button"
-              onClick={handleSwitchCamera}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSwitchCamera();
+              }}
               className="p-3 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 transition cursor-pointer"
               title="Switch Camera"
             >
@@ -482,7 +593,10 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
         {/* End Call (Red) */}
         <button
           type="button"
-          onClick={handleEndCall}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleEndCall();
+          }}
           className="p-3 rounded-full bg-red-600 hover:bg-red-700 active:scale-95 text-white transition shadow-md cursor-pointer ml-1"
           title="End Call"
         >

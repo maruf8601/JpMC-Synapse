@@ -12,7 +12,6 @@ import crypto from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import multer from 'multer';
-import { createServer as createViteServer } from 'vite';
 import { extractEventsWithGemini } from './src/server/geminiExtractor';
 import {
   processTelegramWebhookUpdate,
@@ -111,7 +110,11 @@ import {
   MAX_ATTACHMENT_SIZE_BYTES,
 } from './src/server/forumDriveService';
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+// AI Studio / Cloud Run container architecture: Nginx listens on port 8080 and reverse-proxies to port 3000.
+// If process.env.PORT is 8080 (or undefined), this Node application MUST listen on port 3000 to avoid EADDRINUSE conflict with Nginx.
+// If an explicit alternative APP_PORT or non-8080 PORT is given, respect that.
+const rawPort = process.env.APP_PORT || process.env.SERVER_PORT || process.env.PORT;
+const PORT = rawPort && rawPort !== '8080' ? parseInt(rawPort, 10) : 3000;
 
 /**
  * Derives the canonical public application URL.
@@ -1205,7 +1208,16 @@ async function startServer() {
     const turnCredential = process.env.TURN_CREDENTIAL || '';
 
     const iceServers: any[] = [
-      { urls: [stunUrl, 'stun:stun1.l.google.com:19302'] },
+      {
+        urls: [
+          stunUrl,
+          'stun:stun1.l.google.com:19302',
+          'stun:stun2.l.google.com:19302',
+          'stun:stun3.l.google.com:19302',
+          'stun:stun4.l.google.com:19302',
+          'stun:stun.services.mozilla.com',
+        ],
+      },
     ];
 
     if (turnUrl) {
@@ -2178,6 +2190,7 @@ async function startServer() {
     Boolean(process.env.K_SERVICE);
 
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -2211,6 +2224,19 @@ async function startServer() {
   // Wrap Express in HTTP server to support Socket.IO WebSocket transport
   const httpServer = http.createServer(app);
   initChatSocketServer(httpServer);
+
+  // Fallback handler for port conflicts
+  httpServer.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[JpMC Synapse Server] Port ${PORT} already bound (EADDRINUSE).`);
+      if (PORT !== 3000) {
+        console.log(`[JpMC Synapse Server] Retrying listen on port 3000...`);
+        httpServer.listen(3000, '0.0.0.0');
+      }
+    } else {
+      console.error('[JpMC Synapse Server] Server error:', err);
+    }
+  });
 
   // Start Server
   httpServer.listen(PORT, '0.0.0.0', () => {
