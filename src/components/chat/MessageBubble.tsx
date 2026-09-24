@@ -21,6 +21,8 @@ import {
   ChatMessage,
   deleteIndividualMessage,
   formatFileSize,
+  getActiveAuthToken,
+  buildMediaAttachmentUrl,
 } from '../../services/chatClientService';
 import { Language } from '../../domain/models';
 
@@ -47,12 +49,44 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
+  // Authenticated Media and Download URLs
+  const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string>('');
+  const [resolvedDownloadUrl, setResolvedDownloadUrl] = useState<string>('');
+
   // Audio / Voice Player State
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Resolve authenticated URL with user token for media elements
+  useEffect(() => {
+    let isMounted = true;
+    const rawMedia =
+      message.attachment?.downloadUrl ||
+      (message.attachment?.id ? `/api/chat/attachments/${message.attachment.id}/stream` : '');
+    const rawDownload = message.attachment?.id
+      ? `/api/chat/attachments/${message.attachment.id}/download`
+      : rawMedia;
+
+    if (!rawMedia) {
+      setResolvedMediaUrl('');
+      setResolvedDownloadUrl('');
+      return;
+    }
+
+    getActiveAuthToken().then((token) => {
+      if (isMounted) {
+        setResolvedMediaUrl(buildMediaAttachmentUrl(rawMedia, token));
+        setResolvedDownloadUrl(buildMediaAttachmentUrl(rawDownload, token));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [message.attachment?.id, message.attachment?.downloadUrl]);
 
   // Format time (HH:mm)
   const formatTime = (isoString: string) => {
@@ -83,15 +117,28 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     }
   };
 
+  // Fallback duration in seconds from content metadata (especially for WebM with Infinity duration)
+  const contentSec =
+    message.content && !isNaN(Number(message.content)) ? Number(message.content) : 0;
+  const effectiveDuration =
+    audioDuration && isFinite(audioDuration) && audioDuration > 0
+      ? audioDuration
+      : contentSec;
+
   // Audio Playback Controller
-  const togglePlayAudio = () => {
+  const togglePlayAudio = async () => {
     if (!audioRef.current) return;
     if (isPlayingAudio) {
       audioRef.current.pause();
       setIsPlayingAudio(false);
     } else {
-      audioRef.current.play().catch((err) => console.warn('Audio play error:', err));
-      setIsPlayingAudio(true);
+      try {
+        await audioRef.current.play();
+        setIsPlayingAudio(true);
+      } catch (err) {
+        console.warn('[MessageBubble] Audio play error:', err);
+        setIsPlayingAudio(false);
+      }
     }
   };
 
@@ -100,25 +147,29 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       const current = audioRef.current.currentTime;
       const total = audioRef.current.duration;
       setAudioCurrentTime(current);
-      if (total && total > 0) {
-        setAudioProgress((current / total) * 100);
+      const totalDur = isFinite(total) && total > 0 ? total : effectiveDuration;
+      if (totalDur > 0) {
+        setAudioProgress(Math.min(100, (current / totalDur) * 100));
       }
     }
   };
 
   const handleAudioLoadedMetadata = () => {
-    if (audioRef.current) {
+    if (audioRef.current && isFinite(audioRef.current.duration) && audioRef.current.duration > 0) {
       setAudioDuration(audioRef.current.duration);
     }
   };
 
   const handleAudioSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!audioRef.current || !audioDuration) return;
+    const dur = effectiveDuration;
+    if (!audioRef.current || !dur || dur <= 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const percentage = Math.max(0, Math.min(1, clickX / rect.width));
-    audioRef.current.currentTime = percentage * audioDuration;
-    setAudioProgress(percentage * 100);
+    try {
+      audioRef.current.currentTime = percentage * dur;
+      setAudioProgress(percentage * 100);
+    } catch {}
   };
 
   const handleDelete = async () => {
@@ -137,9 +188,14 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const remainingHours = getRemainingHours(message.expiresAt);
   const isDeletedByUser = message.deletedByUser;
 
-  // Determine media URL
-  const mediaUrl = message.attachment?.downloadUrl || (message.attachment?.id ? `/api/chat/attachments/${message.attachment.id}/stream` : '');
-  const downloadUrl = message.attachment?.id ? `/api/chat/attachments/${message.attachment.id}/download` : mediaUrl;
+  // Media URLs fallback
+  const mediaUrl =
+    resolvedMediaUrl ||
+    message.attachment?.downloadUrl ||
+    (message.attachment?.id ? `/api/chat/attachments/${message.attachment.id}/stream` : '');
+  const downloadUrl =
+    resolvedDownloadUrl ||
+    (message.attachment?.id ? `/api/chat/attachments/${message.attachment.id}/download` : mediaUrl);
 
   return (
     <div className={`flex flex-col mb-3 ${isCurrentUser && !isAdminOversight ? 'items-end' : 'items-start'}`}>
@@ -180,6 +236,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
               src={mediaUrl}
               onTimeUpdate={handleAudioTimeUpdate}
               onLoadedMetadata={handleAudioLoadedMetadata}
+              onError={() => setIsPlayingAudio(false)}
               onEnded={() => {
                 setIsPlayingAudio(false);
                 setAudioProgress(0);
@@ -225,7 +282,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                   isCurrentUser && !isAdminOversight ? 'text-teal-100' : 'text-slate-600'
                 }`}
               >
-                {isPlayingAudio ? formatDuration(audioCurrentTime) : formatDuration(audioDuration || 0)}
+                {isPlayingAudio ? formatDuration(audioCurrentTime) : formatDuration(effectiveDuration)}
               </span>
             </div>
           </div>
@@ -322,7 +379,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         )}
 
         {/* Text message content */}
-        {message.content && (
+        {message.content && message.type !== 'voice' && (
           <p className="whitespace-pre-wrap leading-relaxed select-text font-normal">
             {message.content}
           </p>

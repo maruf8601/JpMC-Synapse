@@ -106,7 +106,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </p>
               <p className="text-[10px] sm:text-[11px] text-amber-800/90 leading-tight">
                 {language === 'bn'
-                  ? 'জেপিএমসি সাইন্যাপস চ্যাটের সকল বার্তা ও ফাইল সর্বোচ্চ ৭২ ঘণ্টা পর্যন্ত সংরক্ষিত থাকে। ব্যবহারকারী কোনো বার্তা মুছে ফেললে আর দেখার সুযোগ নাই এবং না ডিলিট করলেও ৭২ ঘণ্টা পূর্ণ হওয়ার পর সার্ভার থেকে স্থায়ীভাবে স্বয়ংক্রিয়ভাবে মুছে যাবে।'
+                  ? 'জেপিএমসি সাইন্যাপস চ্যাটের সকল বার্তা ও ফাইল সর্বোচ্চ ৭২ ঘণ্টা পর্যন্ত সংরক্ষিত থাকে। ব্যবহারকারী কোনো বার্তা মুছে ফেললেও প্রাতিষ্ঠানিক জবাবদিহিতার জন্য অবশিষ্ট সময় পর্যন্ত অনুমোদিত অ্যাডমিন নজরদারিতে থাকবে না; মানে এডমিন দেখতে পাবেনা। ৭২ ঘণ্টা পূর্ণ হওয়ার পর সার্ভার থেকে স্থায়ীভাবে স্বয়ংক্রিয়ভাবে মুছে যাবে।'
                   : 'All chat messages and attachments are retained for a maximum of 72 hours. User-deleted messages remain accessible to authorized administrators for oversight until the 72-hour window expires, after which content is permanently purged.'}
               </p>
             </div>

@@ -245,9 +245,24 @@ export async function streamAttachmentToClient(
 
   const range = req.headers.range;
 
+  // Determine proper Content-Type
+  let contentType = meta.mimeType || 'application/octet-stream';
+  if (!contentType || contentType === 'application/octet-stream') {
+    const ext = path.extname(meta.filename || '').toLowerCase();
+    if (ext === '.webm') contentType = 'audio/webm';
+    else if (ext === '.ogg') contentType = 'audio/ogg';
+    else if (ext === '.m4a' || ext === '.mp4') contentType = 'audio/mp4';
+    else if (ext === '.wav') contentType = 'audio/wav';
+    else if (ext === '.mp3') contentType = 'audio/mpeg';
+    else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+    else if (ext === '.png') contentType = 'image/png';
+    else if (ext === '.webp') contentType = 'image/webp';
+    else if (ext === '.pdf') contentType = 'application/pdf';
+  }
+
   // Set appropriate headers
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');
+  res.setHeader('Content-Type', contentType);
   res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
 
   if (asDownload) {

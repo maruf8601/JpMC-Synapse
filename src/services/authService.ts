@@ -79,6 +79,27 @@ export async function getAuthHeader(): Promise<Record<string, string>> {
 }
 
 /**
+ * Returns raw active authorization token string for staff session or Google Admin ID token.
+ */
+export async function getActiveAuthToken(): Promise<string> {
+  const stored = getStoredUserSession();
+  if (stored?.token) {
+    return stored.token;
+  }
+
+  if (auth.currentUser) {
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      if (idToken) {
+        return idToken;
+      }
+    } catch {}
+  }
+
+  return '';
+}
+
+/**
  * Clears saved normal user session
  */
 export function clearStoredUserSession(): void {

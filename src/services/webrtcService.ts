@@ -21,6 +21,7 @@ export interface WebRtcCallConfig {
   targetUserId: string;
   isCaller: boolean;
   type: 'audio' | 'video';
+  autoOffer?: boolean;
   onRemoteStream?: (stream: MediaStream) => void;
   onLocalStream?: (stream: MediaStream) => void;
   onCallEnded?: (reason: string) => void;
@@ -68,6 +69,7 @@ export class WebRtcCallSession {
   private isCleanedUp: boolean = false;
   private facingMode: 'user' | 'environment' = 'user';
   private hasPermissionError: boolean = false;
+  private queuedCandidates: any[] = [];
 
   constructor(config: WebRtcCallConfig) {
     this.config = config;
@@ -177,24 +179,36 @@ export class WebRtcCallSession {
       // 6. Listen to incoming signaling from socket
       this.bindSocketSignals();
 
-      // 7. If caller, create and send SDP offer
-      if (this.config.isCaller) {
-        const offer = await this.peerConnection.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: this.config.type === 'video',
-        });
-        await this.peerConnection.setLocalDescription(offer);
-
-        chatSocket.emit('call:signal', {
-          callId: this.config.callId,
-          targetUserId: this.config.targetUserId,
-          signal: { sdp: this.peerConnection.localDescription },
-        });
+      // 7. If caller and peer is already accepted/ready, offer can be sent
+      if (this.config.isCaller && this.config.autoOffer) {
+        await this.sendOffer();
       }
     } catch (err: any) {
       console.warn('[WebRTC] Call setup note:', err?.message || err);
       this.config.onError?.(err);
       this.cleanup();
+    }
+  }
+
+  /**
+   * Generates and transmits SDP offer to the remote peer after call acceptance.
+   */
+  public async sendOffer(): Promise<void> {
+    if (!this.peerConnection || this.isCleanedUp) return;
+    try {
+      const offer = await this.peerConnection.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: this.config.type === 'video',
+      });
+      await this.peerConnection.setLocalDescription(offer);
+
+      chatSocket.emit('call:signal', {
+        callId: this.config.callId,
+        targetUserId: this.config.targetUserId,
+        signal: { sdp: this.peerConnection.localDescription },
+      });
+    } catch (err: any) {
+      console.warn('[WebRTC] Send offer note:', err?.message || err);
     }
   }
 
@@ -268,6 +282,18 @@ export class WebRtcCallSession {
           const remoteDesc = new RTCSessionDescription(signal.sdp);
           await this.peerConnection.setRemoteDescription(remoteDesc);
 
+          // Drain queued ICE candidates
+          while (this.queuedCandidates.length > 0) {
+            const cand = this.queuedCandidates.shift();
+            if (cand && this.peerConnection) {
+              try {
+                await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (e) {
+                console.warn('[WebRTC] Note adding queued candidate:', e);
+              }
+            }
+          }
+
           // If we received an offer, generate answer
           if (signal.sdp.type === 'offer') {
             const answer = await this.peerConnection.createAnswer();
@@ -280,10 +306,14 @@ export class WebRtcCallSession {
             });
           }
         } else if (signal.candidate) {
-          try {
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
-          } catch (e) {
-            console.warn('[WebRTC] Failed adding ice candidate:', e);
+          if (this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
+            try {
+              await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            } catch (e) {
+              console.warn('[WebRTC] Note adding ice candidate:', e);
+            }
+          } else {
+            this.queuedCandidates.push(signal.candidate);
           }
         }
       } catch (err) {

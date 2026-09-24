@@ -5,8 +5,24 @@
  */
 
 import { apiFetch } from '../config/api';
-import { getAuthHeader } from './authService';
+import { getAuthHeader, getActiveAuthToken } from './authService';
 import { chatSocket } from './chatSocketClient';
+
+export { getActiveAuthToken };
+
+/**
+ * Builds an authenticated media or stream URL by attaching the active token parameter.
+ * Used for <audio>, <video>, <img>, and direct media downloads.
+ */
+export function buildMediaAttachmentUrl(url: string, token?: string): string {
+  if (!url) return '';
+  if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) {
+    return url;
+  }
+  if (!token) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
 
 export interface ChatUser {
   uid: string;

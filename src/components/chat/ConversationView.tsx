@@ -50,9 +50,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
-  // WebRTC Audio/Video Call State
-  const [activeCall, setActiveCall] = useState<ActiveCallState | null>(null);
-
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -161,21 +158,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       }
     });
 
-    // 6. Listen for incoming calls
-    const unsubIncomingCall = chatSocket.on('call:incoming', (data: any) => {
-      if (data.callerId === partnerId || data.conversationId === conversation.id) {
-        setActiveCall({
-          callId: data.callId,
-          conversationId: conversation.id,
-          targetUserId: data.callerId,
-          targetUserName: data.callerName || partnerProfile.displayName || 'Faculty Member',
-          type: data.type || 'audio',
-          isIncoming: true,
-          status: 'ringing',
-        });
-      }
-    });
-
     return () => {
       chatSocket.leaveConversation(conversation.id);
       unsubMsg();
@@ -183,7 +165,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       unsubClear();
       unsubRead();
       unsubTyping();
-      unsubIncomingCall();
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, [conversation.id, currentUserId, partnerId, loadMessages, onConversationUpdated, scrollToBottom]);
@@ -283,7 +264,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   // Start outgoing call
   const startCall = (callType: 'audio' | 'video') => {
     const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    setActiveCall({
+    const callData: ActiveCallState = {
       callId,
       conversationId: conversation.id,
       targetUserId: partnerId,
@@ -291,7 +272,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       type: callType,
       isIncoming: false,
       status: 'ringing',
-    });
+    };
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('jpmc:active_call', { detail: callData }));
+    }
   };
 
   // Group messages with date separators
@@ -319,16 +303,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-[#f8fafc] relative">
-      {/* Active WebRTC Call Modal / Window */}
-      {activeCall && (
-        <WebRtcCallModal
-          call={activeCall}
-          currentUserId={currentUserId}
-          language={language}
-          onClose={() => setActiveCall(null)}
-        />
-      )}
-
       {/* Conversation Top Header: ← Avatar User Name 📞 🎥 ⋮ */}
       <header className="bg-white border-b border-slate-200 px-3 py-2.5 flex items-center justify-between sticky top-0 z-20 shadow-xs">
         <div className="flex items-center gap-2.5 overflow-hidden">

@@ -255,6 +255,8 @@ async function validateActiveUserAuth(req: Request, res: Response, next: NextFun
   let token = '';
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.substring(7).trim();
+  } else if (req.query && typeof req.query.token === 'string') {
+    token = (req.query.token as string).trim();
   }
 
   if (adminSecret && token === adminSecret) {

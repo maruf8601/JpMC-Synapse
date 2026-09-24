@@ -172,32 +172,39 @@ export function initChatSocketServer(httpServer: HttpServer): SocketIOServer {
     // WEBRTC CALL SIGNALING
     // ==========================================
 
-    // 1. Initiate Call
-    socket.on('call:initiate', async (data, ack) => {
+    // 1. Initiate / Start Call (handles both 'call:start' and 'call:initiate')
+    const handleStartCall = async (data: any, ack?: (res: any) => void) => {
       try {
-        const { targetUserId, conversationId, callType } = data; // callType: 'audio' | 'video'
-        if (!targetUserId || !conversationId) {
-          return ack?.({ success: false, error: 'Invalid call initiation parameters' });
+        const targetUserId = data?.targetUserId;
+        const conversationId = data?.conversationId;
+        const callType = data?.callType || data?.type || 'audio';
+        const callId = data?.callId || `call_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        if (!targetUserId) {
+          return ack?.({ success: false, error: 'Invalid call initiation parameters: targetUserId required' });
         }
 
-        // Verify conversation authorization
-        const convDoc = await adminDb.collection('conversations').doc(conversationId).get();
-        if (!convDoc.exists) {
-          return ack?.({ success: false, error: 'Conversation does not exist' });
-        }
-        const participants = convDoc.data()?.participantIds || [];
-        if (!participants.includes(user.uid) || !participants.includes(targetUserId)) {
-          return ack?.({ success: false, error: 'Forbidden: Unauthorized call participants' });
+        // Fetch receiver display name if available
+        let receiverName = 'Staff';
+        if (conversationId) {
+          try {
+            const convDoc = await adminDb.collection('conversations').doc(conversationId).get();
+            if (convDoc.exists) {
+              const participants = convDoc.data()?.participantIds || [];
+              if (participants.includes(user.uid) && participants.includes(targetUserId)) {
+                receiverName = convDoc.data()?.participantProfiles?.[targetUserId]?.displayName || 'Staff';
+              }
+            }
+          } catch {}
         }
 
-        const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const session: ActiveCallSession = {
           callId,
-          conversationId,
+          conversationId: conversationId || `direct_${user.uid}_${targetUserId}`,
           callerId: user.uid,
-          callerName: user.displayName,
+          callerName: user.displayName || 'Staff Member',
           receiverId: targetUserId,
-          receiverName: convDoc.data()?.participantProfiles?.[targetUserId]?.displayName || 'Staff',
+          receiverName,
           type: callType === 'video' ? 'video' : 'audio',
           status: 'ringing',
           startTime: Date.now(),
@@ -224,84 +231,96 @@ export function initChatSocketServer(httpServer: HttpServer): SocketIOServer {
         // Signal target user
         io.to(`user:${targetUserId}`).emit('call:incoming', {
           callId,
-          conversationId,
+          conversationId: session.conversationId,
           callerId: user.uid,
-          callerName: user.displayName,
+          callerName: user.displayName || 'Staff Member',
           callType: session.type,
+          type: session.type,
         });
 
         ack?.({ success: true, callId });
       } catch (err: any) {
         ack?.({ success: false, error: err.message });
       }
-    });
+    };
+
+    socket.on('call:initiate', handleStartCall);
+    socket.on('call:start', handleStartCall);
 
     // 2. Accept Call
-    socket.on('call:accept', ({ callId }) => {
+    socket.on('call:accept', ({ callId, callerId }) => {
       const session = activeCalls.get(callId);
-      if (!session || session.receiverId !== user.uid) return;
-
-      if (session.timeoutTimer) {
-        clearTimeout(session.timeoutTimer);
-        session.timeoutTimer = undefined;
+      if (session) {
+        if (session.timeoutTimer) {
+          clearTimeout(session.timeoutTimer);
+          session.timeoutTimer = undefined;
+        }
+        session.status = 'connected';
+        session.connectTime = Date.now();
       }
 
-      session.status = 'connected';
-      session.connectTime = Date.now();
-
-      io.to(`user:${session.callerId}`).emit('call:accepted', {
-        callId,
-        acceptorId: user.uid,
-      });
+      const targetCallerId = session?.callerId || callerId;
+      if (targetCallerId) {
+        io.to(`user:${targetCallerId}`).emit('call:accepted', {
+          callId,
+          acceptorId: user.uid,
+        });
+      }
     });
 
     // 3. Decline Call
-    socket.on('call:decline', ({ callId, reason }) => {
+    socket.on('call:decline', ({ callId, callerId, reason }) => {
       const session = activeCalls.get(callId);
-      if (!session) return;
-
-      if (session.timeoutTimer) {
+      if (session?.timeoutTimer) {
         clearTimeout(session.timeoutTimer);
       }
+      if (callId) endCallSession(callId, 'declined');
 
-      endCallSession(callId, 'declined');
-
-      io.to(`user:${session.callerId}`).emit('call:declined', {
-        callId,
-        reason: reason || 'declined',
-      });
+      const targetCallerId = session?.callerId || callerId;
+      if (targetCallerId) {
+        io.to(`user:${targetCallerId}`).emit('call:declined', {
+          callId,
+          reason: reason || 'declined',
+        });
+      }
     });
 
     // 4. WebRTC Signal (SDP Offer/Answer & ICE Candidates)
     socket.on('call:signal', ({ callId, targetUserId, signal }) => {
       const session = activeCalls.get(callId);
-      if (!session) return;
+      let destinationId = targetUserId;
+      if (session) {
+        destinationId = session.callerId === user.uid ? session.receiverId : session.callerId;
+      }
 
-      // Ensure signal only flows between legitimate participants
-      if (session.callerId !== user.uid && session.receiverId !== user.uid) return;
-      const destinationId = session.callerId === user.uid ? session.receiverId : session.callerId;
-
-      io.to(`user:${destinationId}`).emit('call:signal', {
-        callId,
-        senderId: user.uid,
-        signal,
-      });
+      if (destinationId) {
+        io.to(`user:${destinationId}`).emit('call:signal', {
+          callId,
+          senderId: user.uid,
+          signal,
+        });
+      }
     });
 
     // 5. End Call
-    socket.on('call:end', ({ callId, reason }) => {
+    socket.on('call:end', ({ callId, targetUserId, reason }) => {
       const session = activeCalls.get(callId);
-      if (!session) return;
+      const durationSec = session?.connectTime ? Math.round((Date.now() - session.connectTime) / 1000) : 0;
+      if (callId) endCallSession(callId, reason || 'ended', durationSec);
 
-      const durationSec = session.connectTime ? Math.round((Date.now() - session.connectTime) / 1000) : 0;
-      endCallSession(callId, reason || 'ended', durationSec);
+      const otherUserId = session
+        ? session.callerId === user.uid
+          ? session.receiverId
+          : session.callerId
+        : targetUserId;
 
-      const otherUserId = session.callerId === user.uid ? session.receiverId : session.callerId;
-      io.to(`user:${otherUserId}`).emit('call:ended', {
-        callId,
-        reason: reason || 'ended',
-        durationSec,
-      });
+      if (otherUserId) {
+        io.to(`user:${otherUserId}`).emit('call:ended', {
+          callId,
+          reason: reason || 'ended',
+          durationSec,
+        });
+      }
     });
 
     // Disconnect cleanup

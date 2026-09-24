@@ -60,6 +60,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -122,21 +123,48 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const startRecording = async () => {
     try {
       setUploadError(null);
+
+      // Check device / browser media support
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setUploadError(
+          language === 'bn'
+            ? 'এই ব্রাউজারে বা ডিভাইসে অডিও রেকর্ডিং সমর্থিত নয়।'
+            : 'Audio recording is not supported in this browser or environment.'
+        );
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         },
       });
+      mediaStreamRef.current = stream;
 
-      // Browser-compatible Opus/WebM recording
-      const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? { mimeType: 'audio/webm;codecs=opus' }
-        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-        ? { mimeType: 'audio/ogg;codecs=opus' }
-        : undefined;
+      // Detect supported audio mime types across Chrome, Safari, Firefox, Edge, Android, iOS
+      let chosenMime = '';
+      const candidateMimes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/aac',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/wav',
+      ];
+      if (typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function') {
+        for (const candidate of candidateMimes) {
+          if (MediaRecorder.isTypeSupported(candidate)) {
+            chosenMime = candidate;
+            break;
+          }
+        }
+      }
 
-      const mediaRecorder = new MediaRecorder(stream, options);
+      const recorderOptions: MediaRecorderOptions = chosenMime ? { mimeType: chosenMime } : {};
+      const mediaRecorder = new MediaRecorder(stream, recorderOptions);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -147,15 +175,19 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       };
 
       mediaRecorder.onstop = () => {
+        const finalType = mediaRecorder.mimeType || chosenMime || 'audio/webm';
         const audioBlob = new Blob(audioChunksRef.current, {
-          type: mediaRecorder.mimeType || 'audio/webm',
+          type: finalType,
         });
         setRecordedAudioBlob(audioBlob);
         const url = URL.createObjectURL(audioBlob);
         setAudioPreviewUrl(url);
 
         // Stop stream tracks
-        stream.getTracks().forEach((track) => track.stop());
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+        }
       };
 
       mediaRecorder.start(250);
@@ -167,10 +199,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       }, 1000);
     } catch (err: any) {
       console.warn('[MessageComposer] Mic permission error:', err);
-      alert(
+      setUploadError(
         language === 'bn'
-          ? 'মাইক্রোফোনের অনুমতি পাওয়া যায়নি। দয়া করে ব্রাউজার সেটিংসে অনুমতি দিন।'
-          : 'Microphone access denied. Please grant permission in browser settings.'
+          ? 'মাইক্রোফোনের অনুমতি পাওয়া যায়নি। দয়া করে ব্রাউজার পারমিশন নিশ্চিত করুন।'
+          : 'Microphone access denied. Please grant permission in your browser or device settings.'
       );
     }
   };
@@ -178,7 +210,11 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   // Stop recording
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (err) {
+        console.warn('[MessageComposer] Stop recorder error:', err);
+      }
       setIsRecording(false);
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     }
@@ -187,21 +223,36 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   // Cancel voice recording
   const cancelRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
       setIsRecording(false);
     }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
     if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
     setRecordedAudioBlob(null);
     setAudioPreviewUrl(null);
+    setIsPlayingPreview(false);
     setRecordingSeconds(0);
   };
 
   // Play / Pause voice preview
   const togglePlayPreview = () => {
-    if (!previewAudioRef.current && audioPreviewUrl) {
-      previewAudioRef.current = new Audio(audioPreviewUrl);
-      previewAudioRef.current.onended = () => setIsPlayingPreview(false);
+    if (!audioPreviewUrl) return;
+
+    if (!previewAudioRef.current) {
+      const audio = new Audio(audioPreviewUrl);
+      previewAudioRef.current = audio;
+      audio.onended = () => setIsPlayingPreview(false);
+      audio.onerror = () => setIsPlayingPreview(false);
     }
 
     if (previewAudioRef.current) {
@@ -209,8 +260,12 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         previewAudioRef.current.pause();
         setIsPlayingPreview(false);
       } else {
-        previewAudioRef.current.play();
-        setIsPlayingPreview(true);
+        previewAudioRef.current.play().then(() => {
+          setIsPlayingPreview(true);
+        }).catch((err) => {
+          console.warn('[MessageComposer] Audio preview play failed:', err);
+          setIsPlayingPreview(false);
+        });
       }
     }
   };
@@ -225,9 +280,27 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       setIsSending(true);
       setUploadPercent(0);
       try {
+        // Stop any active preview
+        if (previewAudioRef.current) {
+          previewAudioRef.current.pause();
+          previewAudioRef.current = null;
+        }
+        setIsPlayingPreview(false);
+
+        // Derive appropriate file extension matching recording container
+        const rawType = (recordedAudioBlob.type || '').toLowerCase();
+        let fileExt = '.webm';
+        if (rawType.includes('mp4') || rawType.includes('aac')) {
+          fileExt = '.m4a';
+        } else if (rawType.includes('ogg')) {
+          fileExt = '.ogg';
+        } else if (rawType.includes('wav')) {
+          fileExt = '.wav';
+        }
+
         const voiceFile = new File(
           [recordedAudioBlob],
-          `voice_${Date.now()}.webm`,
+          `voice_${Date.now()}${fileExt}`,
           { type: recordedAudioBlob.type || 'audio/webm' }
         );
 
@@ -239,7 +312,9 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         abortUploadRef.current = abort;
 
         const attachmentMeta = await promise;
-        await onSendMessage('', 'voice', attachmentMeta);
+        // Pass duration in seconds in content so bubble and push previews show exact audio length
+        const durationCaption = recordingSeconds > 0 ? String(recordingSeconds) : '';
+        await onSendMessage(durationCaption, 'voice', attachmentMeta);
 
         cancelRecording();
       } catch (err: any) {

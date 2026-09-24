@@ -32,6 +32,8 @@ import {
   hasUserSeenAbout,
   setUserSeenAbout,
 } from './services/userPreferencesService';
+import type { ActiveCallState } from './components/chat/WebRtcCallModal';
+import { chatSocket } from './services/chatSocketClient';
 
 // Lazy-loaded non-critical views and modals for optimal initial load time and code-splitting
 const UpcomingView = lazy(() =>
@@ -81,6 +83,9 @@ const ChatView = lazy(() =>
 );
 const ForumView = lazy(() =>
   import('./components/forum/ForumView').then((m) => ({ default: m.ForumView }))
+);
+const WebRtcCallModal = lazy(() =>
+  import('./components/chat/WebRtcCallModal').then((m) => ({ default: m.WebRtcCallModal }))
 );
 
 // Fallback spinner for deferred components
@@ -170,6 +175,41 @@ export default function App() {
     : !authState.authenticated
     ? 'unauthenticated'
     : 'authenticated';
+
+  // Global WebRTC Audio / Video Call State
+  const [globalCall, setGlobalCall] = useState<ActiveCallState | null>(null);
+
+  useEffect(() => {
+    if (!authState.authenticated || !userProfile?.uid) return;
+
+    // Connect to real-time chat and signaling gateway
+    chatSocket.connect();
+
+    const unsubIncoming = chatSocket.on('call:incoming', (data: any) => {
+      setGlobalCall({
+        callId: data.callId,
+        conversationId: data.conversationId,
+        targetUserId: data.callerId,
+        targetUserName: data.callerName || 'JpMC Colleague',
+        type: data.type || data.callType || 'audio',
+        isIncoming: true,
+        status: 'ringing',
+      });
+    });
+
+    const handleCustomCall = (e: any) => {
+      if (e.detail) {
+        setGlobalCall(e.detail);
+      }
+    };
+
+    window.addEventListener('jpmc:active_call' as any, handleCustomCall);
+
+    return () => {
+      unsubIncoming();
+      window.removeEventListener('jpmc:active_call' as any, handleCustomCall);
+    };
+  }, [authState.authenticated, userProfile?.uid]);
 
   const [isFirstLoginAbout, setIsFirstLoginAbout] = useState(false);
   const [isSavingAboutPref, setIsSavingAboutPref] = useState(false);
@@ -974,6 +1014,16 @@ export default function App() {
               ]);
               setAnnouncementQueue([]);
             }}
+          />
+        )}
+
+        {/* 7. Global WebRTC Audio / Video Call Window */}
+        {globalCall && userProfile?.uid && (
+          <WebRtcCallModal
+            call={globalCall}
+            currentUserId={userProfile.uid}
+            language={language}
+            onClose={() => setGlobalCall(null)}
           />
         )}
       </Suspense>

@@ -33,6 +33,57 @@ interface WebRtcCallModalProps {
   onClose: () => void;
 }
 
+/**
+ * Generates an audio tone cadence for incoming ringing and outgoing ringback tone.
+ */
+function playToneCadence(isIncoming: boolean): () => void {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return () => {};
+    const ctx = new AudioCtx();
+    let isPlaying = true;
+
+    const playPulse = () => {
+      if (!isPlaying || ctx.state === 'closed') return;
+      try {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc1.frequency.value = isIncoming ? 440 : 440;
+        osc2.frequency.value = isIncoming ? 480 : 480;
+
+        gain.gain.value = 0.04; // Gentle volume
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+
+        const now = ctx.currentTime;
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 1.2);
+        osc2.stop(now + 1.2);
+      } catch {}
+
+      setTimeout(() => {
+        if (isPlaying) playPulse();
+      }, isIncoming ? 2500 : 3500);
+    };
+
+    playPulse();
+
+    return () => {
+      isPlaying = false;
+      try {
+        ctx.close();
+      } catch {}
+    };
+  } catch {
+    return () => {};
+  }
+}
+
 export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   call,
   currentUserId,
@@ -40,6 +91,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   onClose,
 }) => {
   const [session, setSession] = useState<WebRtcCallSession | null>(null);
+  const sessionRef = useRef<WebRtcCallSession | null>(null);
   const [callStatus, setCallStatus] = useState<'ringing' | 'connected' | 'ended'>(call.status);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(call.type === 'video');
@@ -47,11 +99,37 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   const [isExpanded, setIsExpanded] = useState(false);
   const [permissionNotice, setPermissionNotice] = useState<string | null>(null);
   const [isRetryingPermission, setIsRetryingPermission] = useState(false);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Play ringing sound until connected or ended
+  useEffect(() => {
+    if (callStatus === 'ringing') {
+      const stopTone = playToneCadence(Boolean(call.isIncoming));
+      return () => stopTone();
+    }
+  }, [callStatus, call.isIncoming]);
+
+  // Synchronize media streams to video/audio DOM elements whenever streams or elements update
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream, callStatus, isExpanded]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream, callStatus, isExpanded]);
 
   // Setup WebRTC Call Session when call is accepted or outgoing
   const initializeCallSession = (isCaller: boolean) => {
@@ -62,18 +140,11 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
       isCaller,
       type: call.type,
       onLocalStream: (stream) => {
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
+        setLocalStream(stream);
       },
       onRemoteStream: (stream) => {
+        setRemoteStream(stream);
         setCallStatus('connected');
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = stream;
-        }
       },
       onCallEnded: (reason) => {
         console.log('[WebRTC] Call ended:', reason);
@@ -88,12 +159,14 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
         );
       },
       onError: (err) => {
-        console.warn('[WebRTC] Session error:', err?.message || err);
+        console.warn('[WebRTC] Session note:', err?.message || err);
       },
     });
 
     rtcSession.start();
+    sessionRef.current = rtcSession;
     setSession(rtcSession);
+    return rtcSession;
   };
 
   // If outgoing call, start immediately
@@ -104,6 +177,14 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
         conversationId: call.conversationId,
         targetUserId: call.targetUserId,
         type: call.type,
+        callType: call.type,
+      });
+      chatSocket.emit('call:initiate', {
+        callId: call.callId,
+        conversationId: call.conversationId,
+        targetUserId: call.targetUserId,
+        type: call.type,
+        callType: call.type,
       });
       initializeCallSession(true);
     }
@@ -111,6 +192,8 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
     const unsubAccepted = chatSocket.on('call:accepted', (data: any) => {
       if (data.callId === call.callId) {
         setCallStatus('connected');
+        // Remote peer has accepted, send SDP offer now
+        sessionRef.current?.sendOffer();
       }
     });
 
@@ -150,10 +233,11 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      sessionRef.current?.cleanup();
       session?.cleanup();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [session]);
+  }, []);
 
   const handleAccept = () => {
     chatSocket.emit('call:accept', {
@@ -170,6 +254,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
       callerId: call.targetUserId,
       reason: 'declined',
     });
+    sessionRef.current?.cleanup();
     session?.cleanup();
     onClose();
   };
@@ -180,6 +265,7 @@ export const WebRtcCallModal: React.FC<WebRtcCallModalProps> = ({
       targetUserId: call.targetUserId,
       reason: 'hangup',
     });
+    sessionRef.current?.cleanup();
     session?.cleanup();
     setCallStatus('ended');
     setTimeout(() => onClose(), 800);
